@@ -1,0 +1,570 @@
+--!strict
+-- AdminServer.lua  (Script, RunContext = Server)
+local Players            = game:GetService("Players")
+local TeleportService    = game:GetService("TeleportService")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local DataStoreService   = game:GetService("DataStoreService")
+local RunService         = game:GetService("RunService")
+local Lighting           = game:GetService("Lighting")
+local SoundService       = game:GetService("SoundService")
+local HttpService        = game:GetService("HttpService")
+
+-- ===== НАСТРОЙКИ =====
+local GROUP_ID = 377918102
+local MIN_RANK = 3
+local MOD_RANK = 254
+local BAN_RANK = 255
+
+local OWNER_ID_1 = 1447349304 
+local OWNER_ID_2 = 11955295268 -- Ты
+local FRIEND_ID = 2227149740
+
+local PLACES_LIST = {
+	{Name = "(OUTDATED) Sublevel Kit", ID = 76583023620211},
+	{Name = "Beyond the Beginning", ID = 130783704900444},
+	{Name = "CHESPINLEVEL 1", ID = 106975460657579},
+	{Name = "FALSE Sublevel -1", ID = 86910723302022},
+	{Name = "far beyond recognition", ID = 106512875701995},
+	{Name = "I DESPISE YOU.", ID = 110990844248309},
+	{Name = "i hate you", ID = 93532026634920},
+	{Name = "Impossible Section Resting Area", ID = 140024514625203},
+	{Name = "Lobby - Repl347's version", ID = 78260687354727},
+	{Name = "Lobby V2", ID = 97126185550669},
+	{Name = "Modeshop // Editor", ID = 78029909200229},
+	{Name = "Modespice Extra++ - Community Edition", ID = 116676227287927},
+	{Name = "Repl347's Place: 11152026_1", ID = 127902244427989},
+	{Name = "SHAGGY-1", ID = 109969939737533},
+	{Name = "Spooky Bottom", ID = 103711819662548},
+	{Name = "Sublevel !?-1", ID = 111464004662283},
+	{Name = "Sublevel !F-1", ID = 75168471510432},
+	{Name = "Sublevel ?-1", ID = 117776886418122},
+	{Name = "Sublevel )-1", ID = 105966104443216},
+	{Name = "Sublevel {O}-1", ID = 97125696208016},
+	{Name = "Sublevel &-1", ID = 122481126437115},
+	{Name = "Sublevel %-1", ID = 80739821196087},
+	{Name = "Sublevel ↑-1", ID = 79430644182490},
+	{Name = "Sublevel ↑-1 - Repl347's version", ID = 128617159165630},
+	{Name = "Sublevel ↕-1", ID = 117648380433555},
+	{Name = "Sublevel ×-1", ID = 81970265719757},
+	{Name = "Sublevel <-1", ID = 140172027902326},
+	{Name = "Sublevel <<--1", ID = 92370059628304},
+	{Name = "Sublevel <<<-1", ID = 114377587824168},
+	{Name = "Sublevel ☆-1", ID = 74584021842114},
+	{Name = "Sublevel $-1", ID = 96576746277155},
+	{Name = "Sublevel 1", ID = 118527691645014},
+	{Name = "Sublevel 1 but made by Jamal", ID = 79490977084528},
+	{Name = "Sublevel 1 but something's extremely off", ID = 114171228307357},
+	{Name = "Sublevel 1...?", ID = 121856818446898},
+	{Name = "Sublevel 2", ID = 134739690840117},
+	{Name = "Sublevel C-1", ID = 75536380026417},
+	{Name = "Sublevel CA-1", ID = 138674992911511},
+	{Name = "Sublevel E-1", ID = 78700442024493},
+	{Name = "Sublevel EF-1", ID = 96342970104235},
+	{Name = "Sublevel EXT-1", ID = 108240048196107},
+	{Name = "Sublevel F?-1", ID = 104776948823153},
+	{Name = "Sublevel G-1", ID = 123355276938265},
+	{Name = "Sublevel H-1", ID = 131383938621223},
+	{Name = "Sublevel H^^--1", ID = 116231484173248},
+	{Name = "Sublevel I-1", ID = 110148267510105},
+	{Name = "Sublevel IN-1", ID = 109532213133513},
+	{Name = "Sublevel IX-1", ID = 129120509300597},
+	{Name = "Sublevel M-1", ID = 79673158690437},
+	{Name = "Sublevel MX-1", ID = 103289974287420},
+	{Name = "Sublevel N-1", ID = 137224921860470},
+	{Name = "Sublevel N-1 (Old)", ID = 107910846578661},
+	{Name = "Sublevel ᴎ-1", ID = 123696742071976},
+	{Name = "Sublevel Ø-1", ID = 72373697200544},
+	{Name = "Sublevel PC-1", ID = 135818178448560},
+	{Name = "Sublevel SW-1", ID = 99442915314656},
+	{Name = "Sublevel T?-1", ID = 76351386720766},
+	{Name = "Sublevel TC-1", ID = 73326636289603},
+	{Name = "Sublevel TØ-1", ID = 104084233967800},
+	{Name = "Sublevel TX-1", ID = 94119386181939},
+	{Name = "Sublevel X-1", ID = 126717874616240},
+	{Name = "Sublevel ם-1", ID = 116644637709806},
+	{Name = "The Other Sublevel 1", ID = 137230392082644},
+	{Name = "TURKISH SMOSH MODE", ID = 120856282701104},
+	{Name = "Zone 5+ Resting Point - Repl347's version", ID = 118359775224375},
+	{Name = "ZZZ... IM SOO TIRED", ID = 86179602763173},
+}
+local ALLOWED_PLACE_IDS: {[number]: boolean} = {}
+for _, p in ipairs(PLACES_LIST) do ALLOWED_PLACE_IDS[p.ID] = true end
+
+local F3X_FOLDER = "specialadmin"
+local F3X_TOOLS  = "tools"
+local F3X_TOOL   = "Building Tools"
+
+-- ===== КУЛДАУНЫ =====
+local ACTION_COOLDOWN = {
+	Hint = 0.5, Message = 0.5, Kick = 0.5, Kill = 0.5,
+	F3X = 0.5, ExplodeTool = 0.5, Sword = 0.5, Teleport = 1.0, Minigun = 0.5,
+	FreezeTool = 0.5, Skybox = 1.0, DeleteLog = 0.2, Char = 1.0, ColorCorrection = 1.0
+}
+local lastAction: {[string]: {[number]: number}} = {}
+local explodeLast: {[number]: number} = {}
+
+-- ===== DATASTORE =====
+local banStore = DataStoreService:GetDataStore("AdminBans_v1")
+local logStore = DataStoreService:GetDataStore("AdminLogs_v1")
+
+local function getRank(player: Player): number
+	if player.UserId == OWNER_ID_1 or player.UserId == OWNER_ID_2 then return BAN_RANK end
+	if player.UserId == FRIEND_ID then return MOD_RANK end
+	if RunService:IsStudio() then return 255 end
+	local ok, rank = pcall(function() return player:GetRankInGroup(GROUP_ID) end)
+	if ok and type(rank) == "number" then 
+		if rank == 3 or rank == 255 then return rank end
+	end
+	return 0
+end
+
+-- ===== ОЧЕРЕДЬ ЛОГОВ =====
+local logQueue = {}
+local lastLogSave = os.clock()
+local jobId = game.JobId ~= "" and game.JobId or "STUDIO"
+
+local function pushLog(admin: Player, action: string, details: string)
+	local data = {
+		adminName = admin.Name,
+		adminId = admin.UserId,
+		action = action,
+		details = details,
+		jobId = jobId,
+		timestamp = os.time(),
+		logId = HttpService:GenerateGUID(false)
+	}
+	table.insert(logQueue, data)
+	warn(string.format("[LOG] %s (%d) выполнил %s: %s", admin.Name, admin.UserId, action, details))
+end
+
+local function saveLogsToDataStore()
+	if #logQueue == 0 then return end
+	local batch = logQueue
+	logQueue = {}
+	pcall(function()
+		for _, data in ipairs(batch) do
+			logStore:SetAsync("log_" .. data.logId, data)
+		end
+	end)
+	lastLogSave = os.clock()
+end
+
+task.spawn(function()
+	while true do
+		task.wait(5)
+		if #logQueue >= 20 or (os.clock() - lastLogSave > 30 and #logQueue > 0) then
+			saveLogsToDataStore()
+		end
+	end
+end)
+
+game:BindToClose(function()
+	saveLogsToDataStore()
+	task.wait(2)
+end)
+
+-- ===== BAN DB =====
+local function isBanned(userId: number): (boolean, string?)
+	local ok, data = pcall(function() return banStore:GetAsync("ban_" .. userId) end)
+	if ok and data then
+		if data.untilTime and os.time() > data.untilTime then
+			pcall(function() banStore:RemoveAsync("ban_" .. userId) end)
+			return false, nil
+		end
+		return true, data.reason
+	end
+	return false, nil
+end
+
+local function setBan(userId: number, reason: string, durationHours: number)
+	local untilTime = nil
+	if durationHours > 0 then untilTime = os.time() + (durationHours * 3600) end
+	pcall(function() banStore:SetAsync("ban_" .. userId, {reason = reason, at = os.time(), untilTime = untilTime}) end)
+end
+
+local function clearBan(userId: number)
+	pcall(function() banStore:RemoveAsync("ban_" .. userId) end)
+end
+
+-- ===== REMOTES =====
+local remotes = Instance.new("Folder")
+remotes.Name = "AdminRemotes"
+remotes.Parent = ReplicatedStorage
+
+local actionRemote = Instance.new("RemoteEvent"); actionRemote.Name = "AdminAction"; actionRemote.Parent = remotes
+local banRemote = Instance.new("RemoteEvent"); banRemote.Name = "AdminBan"; banRemote.Parent = remotes
+local requestRemote = Instance.new("RemoteFunction"); requestRemote.Name = "AdminRequest"; requestRemote.Parent = remotes
+local explodeRemote = Instance.new("RemoteEvent"); explodeRemote.Name = "AdminExplode"; explodeRemote.Parent = remotes
+local lightingRemote = Instance.new("RemoteEvent"); lightingRemote.Name = "AdminLighting"; lightingRemote.Parent = remotes
+local logRemote = Instance.new("RemoteEvent"); logRemote.Name = "AdminLog"; logRemote.Parent = remotes
+local execRemote = Instance.new("RemoteEvent"); execRemote.Name = "AdminExec"; execRemote.Parent = remotes
+
+-- ===== HELPERS =====
+local function fail(msg: string, ...) warn("[AdminServer] " .. msg, ...) end
+
+local function checkCooldown(player: Player, action: string, rank: number): boolean
+	if rank >= BAN_RANK then return true end
+	local map = lastAction[action]
+	if not map then map = {}; lastAction[action] = map end
+	local now = os.clock()
+	if now - (map[player.UserId] or 0) < (ACTION_COOLDOWN[action] or 0.5) then return false end
+	map[player.UserId] = now
+	return true
+end
+
+local function sanitizeText(s: any, maxLen: number): string
+	if type(s) ~= "string" then return "" end
+	s = string.gsub(s, "[%z\1-\31\127]", "")
+	if #s > maxLen then s = string.sub(s, 1, maxLen) end
+	return s
+end
+
+local function collectTargets(player: Player, ids: any): {Player}
+	local out = {}
+	if type(ids) ~= "table" then return out end
+	for _, uid in ipairs(ids) do
+		local p = Players:GetPlayerByUserId(uid)
+		if p then table.insert(out, p) end
+	end
+	return out
+end
+
+Players.PlayerAdded:Connect(function(player)
+	local banned, reason = isBanned(player.UserId)
+	if banned then player:Kick("Вы забанены. Причина: " .. tostring(reason or "не указана")) end
+end)
+
+-- ===== EXPLODE TOOLS =====
+local function doExplode(origin: Vector3, direction: Vector3, requester: Player, radius: number, force: number)
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = {requester.Character or workspace}
+	rayParams.IgnoreWater = true
+	local result = workspace:Raycast(origin, direction.Unit * 500, rayParams)
+	local hitPos = result and result.Position or (origin + direction.Unit * 500)
+
+	local explosion = Instance.new("Explosion")
+	explosion.Position = hitPos; explosion.BlastRadius = radius; explosion.BlastPressure = 0
+	explosion.DestroyJointRadiusPercent = 0; explosion.ExplosionType = Enum.ExplosionType.NoCraters
+	explosion.Parent = workspace
+
+	for _, part in ipairs(workspace:GetPartBoundsInRadius(hitPos, radius)) do
+		if part:IsA("BasePart") then
+			if part.Anchored then part.Anchored = false end
+			if part.CanSetNetworkOwnership() then pcall(function() part:SetNetworkOwner(nil) end) end
+			local dir = (part.Position - hitPos)
+			local dist = math.max(dir.Magnitude, 1)
+			local falloff = math.clamp(1 - dist / radius, 0, 1)
+			local impulse = dir.Unit * force * falloff + Vector3.new(0, force * 0.4 * falloff, 0)
+			pcall(function() part:ApplyImpulse(impulse * part.AssemblyMass) end)
+		end
+	end
+end
+
+explodeRemote.OnServerEvent:Connect(function(player, origin, direction, radius, force)
+	local rank = getRank(player)
+	if rank < MOD_RANK then return end
+	if rank < BAN_RANK then
+		local now = os.clock()
+		if now - (explodeLast[player.UserId] or 0) < 0.6 then return end
+		explodeLast[player.UserId] = now
+	end
+	if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" or direction.Magnitude < 0.01 then return end
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if root and (origin - root.Position).Magnitude > 20 then origin = root.Position end
+	doExplode(origin, direction, player, math.clamp(tonumber(radius) or 30, 5, 150), math.clamp(tonumber(force) or 60, 10, 300))
+end)
+
+-- ===== ACTIONS =====
+actionRemote.OnServerEvent:Connect(function(player, action, targetIds, payload)
+	local rank = getRank(player)
+	if rank < MIN_RANK or not checkCooldown(player, action, rank) then return end
+	payload = type(payload) == "table" and payload or {}
+
+	local modActions = {
+		Hint = true, Message = true, Kick = true, Kill = true,
+		F3X = true, ExplodeTool = true, Sword = true, Minigun = true,
+		FreezeTool = true, Char = true
+	}
+	if modActions[action] and rank < MOD_RANK then return end
+
+	local targets = collectTargets(player, targetIds)
+	local tNames = {}
+	for _, t in ipairs(targets) do table.insert(tNames, t.Name) end
+	local targetStr = #tNames > 0 and table.concat(tNames, ", ") or "None"
+
+	if action == "Hint" or action == "Message" then
+		local text = sanitizeText(payload.text, 300)
+		local dur  = math.clamp(tonumber(payload.duration) or 5, 1, 120)
+		if text == "" then return end
+		local isMessage = (action == "Message")
+		for _, p in ipairs(Players:GetPlayers()) do
+			local pg = p:FindFirstChildOfClass("PlayerGui") or p:WaitForChild("PlayerGui", 5)
+			if pg then
+				local obj = Instance.new(isMessage and "Message" or "Hint")
+				obj.Text = isMessage and text or ("[GLOBAL ADMIN] " .. text)
+				obj.Parent = pg
+				task.delay(dur, function() if obj and obj.Parent then obj:Destroy() end end)
+			end
+		end
+		pushLog(player, action, "Text: " .. text .. " (Dur: " .. dur .. ")")
+		return
+	end
+
+	if action == "Kick" then
+		local reason = sanitizeText(payload.text, 200)
+		for _, target in ipairs(targets) do target:Kick("Кикнут админом. Причина: " .. (reason ~= "" and reason or "без причины")) end
+		pushLog(player, "Kick", "Targets: " .. targetStr .. " | Reason: " .. (reason ~= "" and reason or "None"))
+		return
+	end
+
+	if action == "Kill" then
+		for _, target in ipairs(targets) do
+			local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum:TakeDamage(hum.MaxHealth + 9999); hum.Health = 0 end) end
+		end
+		pushLog(player, "Kill", "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Char" then
+		local charId = tonumber(payload.charId)
+		if not charId then return end
+		local success, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(charId) end)
+		if not success or not desc then fail("Неверный ID персонажа"); return end
+
+		for _, target in ipairs(targets) do
+			local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum:ApplyDescription(desc) end) end
+		end
+		pushLog(player, "Char", "Targets: " .. targetStr .. " | Appearance ID: " .. charId)
+		return
+	end
+
+	if action == "F3X" or action == "Sword" or action == "ExplodeTool" or action == "Minigun" or action == "FreezeTool" then
+		local toolName = "Building Tools"
+		if action == "Sword" then toolName = "ClassicSword"
+		elseif action == "ExplodeTool" then toolName = "Load Explode Tool"
+		elseif action == "Minigun" then toolName = "Minigun Explode Tool"
+		elseif action == "FreezeTool" then toolName = "Freeze Tool" end
+
+		local tool
+		if action == "ExplodeTool" or action == "Minigun" or action == "FreezeTool" then
+			tool = Instance.new("Tool"); tool.Name = toolName; tool.RequiresHandle = false; tool.CanBeDropped = false
+		else
+			local tools = ReplicatedStorage:FindFirstChild(F3X_FOLDER) and ReplicatedStorage[F3X_FOLDER]:FindFirstChild(F3X_TOOLS)
+			tool = tools and tools:FindFirstChild(toolName)
+			if tool and not tool:IsA("Tool") then tool = tool:FindFirstChildOfClass("Tool") end
+		end
+
+		if not tool then return end
+		if #targets == 0 then table.insert(targets, player) end
+		for _, target in ipairs(targets) do
+			local bp = target:FindFirstChildOfClass("Backpack") or target.Character
+			if bp then local clone = tool:Clone(); clone.Parent = bp end
+		end
+		pushLog(player, action, "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Teleport" then
+		local placeId = tonumber(payload.placeId)
+		if not placeId or not ALLOWED_PLACE_IDS[placeId] then return end
+		if #targets == 0 then table.insert(targets, player) end
+		pcall(function() TeleportService:TeleportAsync(placeId, targets) end)
+		pushLog(player, "Teleport", "Targets: " .. targetStr .. " | PlaceId: " .. placeId)
+		return
+	end
+end)
+
+-- ===== LIGHTING =====
+local function stopDisco()
+	for _, child in ipairs(Lighting:GetChildren()) do
+		if child:GetAttribute("DiscoLight") then child:Destroy() end
+	end
+end
+local discoThread = nil
+
+lightingRemote.OnServerEvent:Connect(function(player, action, data, data2, data3)
+	local rank = getRank(player)
+	if rank < MIN_RANK then return end
+
+	if action == "SetTime" then
+		local t = tonumber(data)
+		if t then Lighting.TimeOfDay = string.format("%02d:00:00", math.clamp(t, 0, 24)); pushLog(player, "Lighting", "Time: " .. t) end
+	elseif action == "SetFog" then
+		local f = tonumber(data)
+		if f then Lighting.FogEnd = f; pushLog(player, "Lighting", "Fog: " .. f) end
+	elseif action == "ColorCorrection" then
+		if rank < MOD_RANK then return end
+		local cc = Lighting:FindFirstChild("AdminColorCorrection")
+		if not cc then cc = Instance.new("ColorCorrectionEffect"); cc.Name = "AdminColorCorrection"; cc.Parent = Lighting end
+		cc.Saturation = tonumber(data) or 0
+		cc.Contrast = tonumber(data2) or 0
+		cc.Brightness = tonumber(data3) or 0
+		pushLog(player, "ColorCorrection", "Sat: "..tostring(data).." Con: "..tostring(data2).." Bri: "..tostring(data3))
+	elseif action == "Skybox" then
+		if rank < MOD_RANK then return end
+		local sky = Lighting:FindFirstChildOfClass("Sky")
+		if not sky then sky = Instance.new("Sky"); sky.Parent = Lighting end
+		if data == "Reset" then
+			sky.SkyboxBk = ""; sky.SkyboxDn = ""; sky.SkyboxFt = ""; sky.SkyboxLf = ""; sky.SkyboxRt = ""; sky.SkyboxUp = ""
+			pushLog(player, "Skybox", "Reset")
+		else
+			local id = "rbxassetid://" .. tostring(data)
+			sky.SkyboxBk = id; sky.SkyboxDn = id; sky.SkyboxFt = id
+			sky.SkyboxLf = id; sky.SkyboxRt = id; sky.SkyboxUp = id
+			pushLog(player, "Skybox", "ID: " .. data)
+		end
+	elseif action == "Disco" then
+		if rank < MOD_RANK then return end
+		if discoThread then
+			task.cancel(discoThread); discoThread = nil; stopDisco()
+			Lighting.Ambient = Color3.fromRGB(70, 70, 70); Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+			pushLog(player, "Disco", "Stopped")
+			return
+		end
+		discoThread = task.spawn(function()
+			while true do
+				local c = Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+				Lighting.Ambient = c; Lighting.OutdoorAmbient = c
+				local l = Instance.new("PointLight"); l.Color = c; l.Range = 60; l.Brightness = 5
+				l:SetAttribute("DiscoLight", true)
+				local players = Players:GetPlayers()
+				if #players > 0 then
+					local rp = players[math.random(1, #players)]
+					local root = rp.Character and rp.Character:FindFirstChild("HumanoidRootPart")
+					if root then
+						local p = Instance.new("Part"); p.Anchored = true; p.Transparency = 1; p.CanCollide = false
+						p.Position = root.Position + Vector3.new(math.random(-30,30), math.random(5,20), math.random(-30,30))
+						p.Parent = workspace; l.Parent = p
+						task.delay(0.2, function() p:Destroy() end)
+					end
+				end
+				task.wait(0.25)
+			end
+		end)
+		pushLog(player, "Disco", "Started")
+	elseif action == "Music" then
+		if rank < MOD_RANK then return end
+		local soundId = tonumber(data)
+		local bgm = SoundService:FindFirstChild("AdminBGM")
+		if bgm then bgm:Destroy() end
+		if soundId and soundId > 0 then
+			local newBgm = Instance.new("Sound"); newBgm.Name = "AdminBGM"; newBgm.SoundId = "rbxassetid://" .. soundId
+			newBgm.Looped = true; newBgm.Parent = SoundService; newBgm:Play()
+			pushLog(player, "Music", "Played ID: " .. soundId)
+		else
+			pushLog(player, "Music", "Stopped")
+		end
+	end
+end)
+
+-- ===== BAN =====
+banRemote.OnServerEvent:Connect(function(player, action, userId, reason, durationHours)
+	if getRank(player) < BAN_RANK then return end
+	if type(userId) ~= "number" or userId <= 0 then return end
+	if action == "ban" then
+		local r = sanitizeText(reason, 200)
+		if r == "" then r = "без причины" end
+		local dur = tonumber(durationHours) or 0
+		setBan(userId, r, dur)
+		local target = Players:GetPlayerByUserId(userId)
+		if target then 
+			local timeStr = dur > 0 and ("на " .. dur .. " ч.") or "навсегда"
+			target:Kick("Вы забанены " .. timeStr .. ". Причина: " .. r) 
+		end
+		pushLog(player, "Ban", "Target ID: " .. userId .. " | Reason: " .. r .. " | Hours: " .. dur)
+	elseif action == "unban" then
+		clearBan(userId)
+		pushLog(player, "Unban", "Target ID: " .. userId)
+	end
+end)
+
+-- ===== DELETE LOG =====
+logRemote.OnServerEvent:Connect(function(player, logId)
+	if getRank(player) < BAN_RANK then return end
+	if type(logId) == "string" and logId ~= "" then
+		pcall(function() logStore:RemoveAsync("log_" .. logId) end)
+		pushLog(player, "LogDelete", "Deleted ID: " .. logId)
+	end
+end)
+
+-- ===== EXECUTOR (Выполнение на сервере) =====
+execRemote.OnServerEvent:Connect(function(player, mode, code)
+	if getRank(player) < BAN_RANK then return end
+	local codeStr = tostring(code)
+
+	if mode == "Server" or mode == "Script" then
+		local fn, err = loadstring(codeStr)
+		if fn then 
+			local success, execErr = pcall(fn)
+			if not success then
+				execRemote:FireClient(player, "Error", tostring(execErr))
+			else
+				execRemote:FireClient(player, "Success", "Script executed on Server")
+			end
+			pushLog(player, "Executor", "Mode: Server | Script length: " .. #codeStr)
+		else 
+			execRemote:FireClient(player, "Error", tostring(err))
+		end
+	elseif mode == "Module" then
+		local fn, err = loadstring("return function() " .. codeStr .. " end")
+		if fn then
+			local success, module = pcall(fn)
+			if success then
+				local success2, execErr = pcall(module)
+				if not success2 then execRemote:FireClient(player, "Error", tostring(execErr)) 
+				else execRemote:FireClient(player, "Success", "Module executed") end
+				pushLog(player, "Executor", "Mode: Module | Script length: " .. #codeStr)
+			else
+				execRemote:FireClient(player, "Error", tostring(module))
+			end
+		else
+			execRemote:FireClient(player, "Error", tostring(err))
+		end
+	end
+end)
+
+-- ===== REQUEST =====
+requestRemote.OnServerInvoke = function(player, kind)
+	local rank = getRank(player)
+	if kind == "rank" then return rank >= MIN_RANK and rank or nil end
+	if rank < MIN_RANK then return nil end
+
+	if kind == "places" then return PLACES_LIST
+	elseif kind == "banned" then
+		if rank < BAN_RANK then return {} end
+		local list = {}
+		local ok, pages = pcall(function() return banStore:ListKeysAsync("ban_", 50) end)
+		if ok and pages then
+			for _, item in ipairs(pages:GetCurrentPage()) do
+				local id = tonumber(string.match(item.KeyName, "ban_(%d+)"))
+				if id then
+					local ok2, data = pcall(function() return banStore:GetAsync(item.KeyName) end)
+					if ok2 and data then 
+						if not data.untilTime or os.time() <= data.untilTime then table.insert(list, {userId = id, reason = data.reason}) end
+					end
+				end
+			end
+		end
+		return list
+	elseif kind == "logs" then
+		if rank < BAN_RANK then return {} end
+		saveLogsToDataStore(); task.wait(0.5) 
+		local list = {}
+		local ok, pages = pcall(function() return logStore:ListKeysAsync("log_", 50) end)
+		if ok and pages then
+			for _, item in ipairs(pages:GetCurrentPage()) do
+				local ok2, data = pcall(function() return logStore:GetAsync(item.KeyName) end)
+				if ok2 and data then table.insert(list, data) end
+			end
+		end
+		table.sort(list, function(a, b) return (a.timestamp or 0) > (b.timestamp or 0) end)
+		return list
+	end
+	return nil
+end
+
+print("[AdminServer] запущен")
