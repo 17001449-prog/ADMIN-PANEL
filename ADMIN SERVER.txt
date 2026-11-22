@@ -98,7 +98,11 @@ local F3X_TOOL   = "Building Tools"
 local ACTION_COOLDOWN = {
 	Hint = 0.5, Message = 0.5, Kick = 0.5, Kill = 0.5,
 	F3X = 0.5, ExplodeTool = 0.5, Sword = 0.5, Teleport = 1.0, Minigun = 0.5,
-	FreezeTool = 0.5, Skybox = 1.0, DeleteLog = 0.2, Char = 1.0, ColorCorrection = 1.0
+	FreezeTool = 0.5, Skybox = 1.0, DeleteLog = 0.2, Char = 1.0, ColorCorrection = 1.0,
+	Notify = 0.5, Freeze = 0.5, Unfreeze = 0.5, Bring = 1.0, To = 1.0,
+	God = 0.5, Ungod = 0.5, Respawn = 1.0, Speed = 0.5, JumpPower = 0.5,
+	Sit = 0.5, Unsit = 0.5, Nuke = 1.0, Shutdown = 3.0, LockServer = 2.0,
+	UnlockServer = 2.0, UnbanAll = 5.0, Restart = 5.0
 }
 local lastAction: {[string]: {[number]: number}} = {}
 local explodeLast: {[number]: number} = {}
@@ -107,15 +111,22 @@ local explodeLast: {[number]: number} = {}
 local banStore = DataStoreService:GetDataStore("AdminBans_v1")
 local logStore = DataStoreService:GetDataStore("AdminLogs_v1")
 
+local rankCache: {[number]: {rank: number, t: number}} = {}
+
 local function getRank(player: Player): number
-	if player.UserId == OWNER_ID_1 or player.UserId == OWNER_ID_2 then return BAN_RANK end
-	if player.UserId == FRIEND_ID then return MOD_RANK end
+	local uid = player.UserId
+	if uid == OWNER_ID_1 or uid == OWNER_ID_2 then return BAN_RANK end
+	if uid == FRIEND_ID then return MOD_RANK end
 	if RunService:IsStudio() then return 255 end
-	local ok, rank = pcall(function() return player:GetRankInGroup(GROUP_ID) end)
-	if ok and type(rank) == "number" then 
-		if rank == 3 or rank == 255 then return rank end
+	local cached = rankCache[uid]
+	if cached and os.clock() - cached.t < 60 then return cached.rank end
+	local rank = 0
+	local ok, result = pcall(function() return player:GetRankInGroup(GROUP_ID) end)
+	if ok and type(result) == "number" then
+		if result == 3 or result == 255 then rank = result end
 	end
-	return 0
+	rankCache[uid] = {rank = rank, t = os.clock()}
+	return rank
 end
 
 -- ===== ОЧЕРЕДЬ ЛОГОВ =====
@@ -163,27 +174,92 @@ game:BindToClose(function()
 	task.wait(2)
 end)
 
--- ===== BAN DB =====
-local function isBanned(userId: number): (boolean, string?)
-	local ok, data = pcall(function() return banStore:GetAsync("ban_" .. userId) end)
-	if ok and data then
-		if data.untilTime and os.time() > data.untilTime then
-			pcall(function() banStore:RemoveAsync("ban_" .. userId) end)
-			return false, nil
-		end
-		return true, data.reason
+-- ===== BAN SYSTEM =====
+local UNIT_SECONDS: {[string]: number} = {
+	["s"] = 1, ["sec"] = 1, ["secs"] = 1, ["second"] = 1, ["seconds"] = 1,
+	["m"] = 60, ["min"] = 60, ["mins"] = 60, ["minute"] = 60, ["minutes"] = 60,
+	["h"] = 3600, ["hr"] = 3600, ["hrs"] = 3600, ["hour"] = 3600, ["hours"] = 3600,
+	["d"] = 86400, ["day"] = 86400, ["days"] = 86400,
+	["w"] = 604800, ["week"] = 604800, ["weeks"] = 604800,
+	["mo"] = 2592000, ["month"] = 2592000, ["months"] = 2592000,
+	["y"] = 31536000, ["year"] = 31536000, ["years"] = 31536000,
+	["perm"] = 0, ["permanent"] = 0, ["forever"] = 0,
+}
+local MAX_BAN_SECONDS = 10 * 365 * 86400 -- максимум 10 лет
+local nameCache: {[number]: string} = {}
+local serverLocked = false
+local SERVER_START = os.time()
+
+local function durationToSeconds(duration: any): (number, string?)
+	if duration == nil then return 0, nil end
+	if type(duration) == "number" then
+		if duration ~= duration then return 0, "Некорректная длительность" end
+		local secs = math.floor(duration)
+		if secs < 0 then return 0, "Длительность не может быть отрицательной" end
+		if secs > MAX_BAN_SECONDS then secs = MAX_BAN_SECONDS end
+		return secs, nil
 	end
-	return false, nil
+	if type(duration) == "table" then
+		local value = tonumber(duration.value)
+		if not value then return 0, "Введите корректное число" end
+		if value < 0 then return 0, "Длительность не может быть отрицательной" end
+		local unit = string.lower(tostring(duration.unit or "d"))
+		local mult = UNIT_SECONDS[unit]
+		if not mult then return 0, "Неизвестная единица времени" end
+		local secs = math.floor(value * mult)
+		if secs > MAX_BAN_SECONDS then secs = MAX_BAN_SECONDS end
+		return secs, nil
+	end
+	return 0, "Некорректная длительность"
 end
 
-local function setBan(userId: number, reason: string, durationHours: number)
-	local untilTime = nil
-	if durationHours > 0 then untilTime = os.time() + (durationHours * 3600) end
-	pcall(function() banStore:SetAsync("ban_" .. userId, {reason = reason, at = os.time(), untilTime = untilTime}) end)
+local function formatDuration(totalSeconds: number): string
+	if totalSeconds <= 0 then return "навсегда" end
+	local s = math.floor(totalSeconds)
+	local years = math.floor(s / 31536000); s = s - years * 31536000
+	local months = math.floor(s / 2592000); s = s - months * 2592000
+	local weeks = math.floor(s / 604800); s = s - weeks * 604800
+	local days = math.floor(s / 86400); s = s - days * 86400
+	local hours = math.floor(s / 3600); s = s - hours * 3600
+	local minutes = math.floor(s / 60); s = s - minutes * 60
+	local parts = {}
+	local function add(value: number, unit: string)
+		if value > 0 then table.insert(parts, value .. " " .. unit) end
+	end
+	add(years, "г."); add(months, "мес."); add(weeks, "нед."); add(days, "дн.")
+	add(hours, "ч."); add(minutes, "мин."); add(s, "сек.")
+	if #parts == 0 then return "0 сек." end
+	return table.concat(parts, " ")
 end
 
-local function clearBan(userId: number)
-	pcall(function() banStore:RemoveAsync("ban_" .. userId) end)
+local function getBan(userId: number): {[string]: any}?
+	local ok, data = pcall(function() return banStore:GetAsync("ban_" .. userId) end)
+	if not ok or type(data) ~= "table" then return nil end
+	if type(data.untilTime) == "number" and os.time() > data.untilTime then
+		pcall(function() banStore:RemoveAsync("ban_" .. userId) end)
+		return nil
+	end
+	return data
+end
+
+local function setBan(userId: number, data: {[string]: any}): boolean
+	local ok = pcall(function() banStore:SetAsync("ban_" .. userId, data) end)
+	return ok
+end
+
+local function clearBan(userId: number): boolean
+	local ok = pcall(function() banStore:RemoveAsync("ban_" .. userId) end)
+	return ok
+end
+
+local function resolveUserName(userId: number): string?
+	if nameCache[userId] then return nameCache[userId] end
+	local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(userId) end)
+	if ok and type(name) == "string" and name ~= "" then
+		nameCache[userId] = name
+		return name
+	end
+	return nil
 end
 
 -- ===== REMOTES =====
@@ -193,6 +269,7 @@ remotes.Parent = ReplicatedStorage
 
 local actionRemote = Instance.new("RemoteEvent"); actionRemote.Name = "AdminAction"; actionRemote.Parent = remotes
 local banRemote = Instance.new("RemoteEvent"); banRemote.Name = "AdminBan"; banRemote.Parent = remotes
+local banRequest = Instance.new("RemoteFunction"); banRequest.Name = "AdminBanRequest"; banRequest.Parent = remotes
 local requestRemote = Instance.new("RemoteFunction"); requestRemote.Name = "AdminRequest"; requestRemote.Parent = remotes
 local explodeRemote = Instance.new("RemoteEvent"); explodeRemote.Name = "AdminExplode"; explodeRemote.Parent = remotes
 local lightingRemote = Instance.new("RemoteEvent"); lightingRemote.Name = "AdminLighting"; lightingRemote.Parent = remotes
@@ -207,7 +284,7 @@ local function checkCooldown(player: Player, action: string, rank: number): bool
 	local map = lastAction[action]
 	if not map then map = {}; lastAction[action] = map end
 	local now = os.clock()
-	if now - (map[player.UserId] or 0) < (ACTION_COOLDOWN[action] or 0.5) then return false end
+	if now - (map[player.UserId] or -math.huge) < (ACTION_COOLDOWN[action] or 0.5) then return false end
 	map[player.UserId] = now
 	return true
 end
@@ -229,30 +306,65 @@ local function collectTargets(player: Player, ids: any): {Player}
 	return out
 end
 
-Players.PlayerAdded:Connect(function(player)
-	local banned, reason = isBanned(player.UserId)
-	if banned then player:Kick("Вы забанены. Причина: " .. tostring(reason or "не указана")) end
+local function checkPlayerOnJoin(player: Player)
+	nameCache[player.UserId] = player.Name
+	local data = getBan(player.UserId)
+	if data then
+		local reason = tostring(data.reason or "не указана")
+		local timeLeft = type(data.untilTime) == "number" and formatDuration(data.untilTime - os.time()) or "навсегда"
+		local msg = "Вы забанены на этом сервере.\nПричина: " .. reason .. "\nОсталось: " .. timeLeft
+		if data.adminName then msg = msg .. "\nВыдал: " .. tostring(data.adminName) end
+		player:Kick(msg)
+		return
+	end
+	if serverLocked and getRank(player) < MOD_RANK then
+		player:Kick("Сервер временно закрыт администрацией.")
+	end
+end
+
+Players.PlayerAdded:Connect(checkPlayerOnJoin)
+for _, p in ipairs(Players:GetPlayers()) do
+	task.spawn(checkPlayerOnJoin, p)
+end
+
+-- Автоматическая очистка истёкших банов (раз в 5 минут)
+task.spawn(function()
+	while true do
+		task.wait(900)
+		local ok, pages = pcall(function() return banStore:ListKeysAsync("ban_", 50) end)
+		if ok and pages then
+			local currentPage = pages
+			local guard = 0
+			repeat
+				for _, item in ipairs(currentPage:GetCurrentPage()) do
+					local id = tonumber(string.match(item.KeyName, "ban_(%d+)"))
+					if id then
+						local ok2, data = pcall(function() return banStore:GetAsync(item.KeyName) end)
+						if ok2 and type(data) == "table" and type(data.untilTime) == "number" and os.time() > data.untilTime then
+							clearBan(id)
+						end
+					end
+				end
+				if currentPage.IsFinished then break end
+				currentPage:AdvanceToNextPageAsync()
+				guard += 1
+			until guard >= 20
+		end
+	end
 end)
 
 -- ===== EXPLODE TOOLS =====
-local function doExplode(origin: Vector3, direction: Vector3, requester: Player, radius: number, force: number)
-	local rayParams = RaycastParams.new()
-	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = {requester.Character or workspace}
-	rayParams.IgnoreWater = true
-	local result = workspace:Raycast(origin, direction.Unit * 500, rayParams)
-	local hitPos = result and result.Position or (origin + direction.Unit * 500)
-
+local function explodeAt(position: Vector3, requester: Player, radius: number, force: number)
 	local explosion = Instance.new("Explosion")
-	explosion.Position = hitPos; explosion.BlastRadius = radius; explosion.BlastPressure = 0
+	explosion.Position = position; explosion.BlastRadius = radius; explosion.BlastPressure = 0
 	explosion.DestroyJointRadiusPercent = 0; explosion.ExplosionType = Enum.ExplosionType.NoCraters
 	explosion.Parent = workspace
 
-	for _, part in ipairs(workspace:GetPartBoundsInRadius(hitPos, radius)) do
+	for _, part in ipairs(workspace:GetPartBoundsInRadius(position, radius)) do
 		if part:IsA("BasePart") then
 			if part.Anchored then part.Anchored = false end
 			if part.CanSetNetworkOwnership() then pcall(function() part:SetNetworkOwner(nil) end) end
-			local dir = (part.Position - hitPos)
+			local dir = (part.Position - position)
 			local dist = math.max(dir.Magnitude, 1)
 			local falloff = math.clamp(1 - dist / radius, 0, 1)
 			local impulse = dir.Unit * force * falloff + Vector3.new(0, force * 0.4 * falloff, 0)
@@ -261,12 +373,22 @@ local function doExplode(origin: Vector3, direction: Vector3, requester: Player,
 	end
 end
 
+local function doExplode(origin: Vector3, direction: Vector3, requester: Player, radius: number, force: number)
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = {requester.Character or workspace}
+	rayParams.IgnoreWater = true
+	local result = workspace:Raycast(origin, direction.Unit * 500, rayParams)
+	local hitPos = result and result.Position or (origin + direction.Unit * 500)
+	explodeAt(hitPos, requester, radius, force)
+end
+
 explodeRemote.OnServerEvent:Connect(function(player, origin, direction, radius, force)
 	local rank = getRank(player)
 	if rank < MOD_RANK then return end
 	if rank < BAN_RANK then
 		local now = os.clock()
-		if now - (explodeLast[player.UserId] or 0) < 0.6 then return end
+		if now - (explodeLast[player.UserId] or -math.huge) < 0.6 then return end
 		explodeLast[player.UserId] = now
 	end
 	if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" or direction.Magnitude < 0.01 then return end
@@ -275,6 +397,64 @@ explodeRemote.OnServerEvent:Connect(function(player, origin, direction, radius, 
 	if root and (origin - root.Position).Magnitude > 20 then origin = root.Position end
 	doExplode(origin, direction, player, math.clamp(tonumber(radius) or 30, 5, 150), math.clamp(tonumber(force) or 60, 10, 300))
 end)
+
+-- ===== УВЕДОМЛЕНИЯ =====
+local function notifyAll(text: string, duration: number, title: string?)
+	for _, p in ipairs(Players:GetPlayers()) do
+		local pg = p:FindFirstChildOfClass("PlayerGui")
+		if pg then
+			local holder = Instance.new("Frame")
+			holder.Name = "AdminNotify"
+			holder.AnchorPoint = Vector2.new(0.5, 0)
+			holder.Position = UDim2.new(0.5, 0, 0, 24)
+			holder.Size = UDim2.new(0, 460, 0, 76)
+			holder.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+			holder.BackgroundTransparency = 0.1
+			holder.BorderSizePixel = 0
+			holder.ZIndex = 50
+			holder.Parent = pg
+
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 10)
+			corner.Parent = holder
+
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = Color3.fromRGB(255, 170, 0)
+			stroke.Thickness = 1.5
+			stroke.Parent = holder
+
+			local titleLbl = Instance.new("TextLabel")
+			titleLbl.Size = UDim2.new(1, -24, 0, 22)
+			titleLbl.Position = UDim2.new(0, 12, 0, 8)
+			titleLbl.BackgroundTransparency = 1
+			titleLbl.TextColor3 = Color3.fromRGB(255, 170, 0)
+			titleLbl.Text = string.upper(title or "ОБЪЯВЛЕНИЕ")
+			titleLbl.Font = Enum.Font.GothamBold
+			titleLbl.TextSize = 13
+			titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+			titleLbl.ZIndex = 51
+			titleLbl.Parent = holder
+
+			local textLbl = Instance.new("TextLabel")
+			textLbl.Size = UDim2.new(1, -24, 0, 34)
+			textLbl.Position = UDim2.new(0, 12, 0, 32)
+			textLbl.BackgroundTransparency = 1
+			textLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+			textLbl.Text = text
+			textLbl.Font = Enum.Font.Gotham
+			textLbl.TextSize = 14
+			textLbl.TextWrapped = true
+			textLbl.TextXAlignment = Enum.TextXAlignment.Left
+			textLbl.TextYAlignment = Enum.TextYAlignment.Top
+			textLbl.ZIndex = 51
+			textLbl.Parent = holder
+
+			task.delay(duration, function()
+				if holder and holder.Parent then holder:Destroy() end
+			end)
+		end
+	end
+end
 
 -- ===== ACTIONS =====
 actionRemote.OnServerEvent:Connect(function(player, action, targetIds, payload)
@@ -285,7 +465,10 @@ actionRemote.OnServerEvent:Connect(function(player, action, targetIds, payload)
 	local modActions = {
 		Hint = true, Message = true, Kick = true, Kill = true,
 		F3X = true, ExplodeTool = true, Sword = true, Minigun = true,
-		FreezeTool = true, Char = true
+		FreezeTool = true, Char = true,
+		Notify = true, Freeze = true, Unfreeze = true, Bring = true, To = true,
+		God = true, Ungod = true, Respawn = true, Speed = true, JumpPower = true,
+		Sit = true, Unsit = true, Nuke = true
 	}
 	if modActions[action] and rank < MOD_RANK then return end
 
@@ -376,6 +559,205 @@ actionRemote.OnServerEvent:Connect(function(player, action, targetIds, payload)
 		pushLog(player, "Teleport", "Targets: " .. targetStr .. " | PlaceId: " .. placeId)
 		return
 	end
+
+	if action == "Notify" then
+		local text = sanitizeText(payload.text, 300)
+		local dur = math.clamp(tonumber(payload.duration) or 5, 1, 60)
+		if text == "" then return end
+		notifyAll(text, dur)
+		pushLog(player, "Notify", "Text: " .. text .. " (Dur: " .. dur .. ")")
+		return
+	end
+
+	if action == "Freeze" or action == "Unfreeze" then
+		if #targets == 0 then return end
+		local freezing = (action == "Freeze")
+		for _, target in ipairs(targets) do
+			local char = target.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if root and hum then
+				pcall(function()
+					root.Anchored = freezing
+					hum.WalkSpeed = freezing and 0 or 16
+					hum.JumpPower = freezing and 0 or 50
+					hum.AutoRotate = not freezing
+				end)
+				target:SetAttribute("AdminFrozen", freezing)
+			end
+		end
+		pushLog(player, action, "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Bring" then
+		local adminRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not adminRoot or #targets == 0 then return end
+		for _, target in ipairs(targets) do
+			local root = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+			if root then
+				pcall(function()
+					root.CFrame = adminRoot.CFrame + adminRoot.CFrame.LookVector * 3 + Vector3.new(0, 2, 0)
+				end)
+			end
+		end
+		pushLog(player, "Bring", "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "To" then
+		local adminRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not adminRoot or #targets == 0 then return end
+		local targetRoot = targets[1].Character and targets[1].Character:FindFirstChild("HumanoidRootPart")
+		if targetRoot then
+			pcall(function()
+				adminRoot.CFrame = targetRoot.CFrame - targetRoot.CFrame.LookVector * 3 + Vector3.new(0, 2, 0)
+			end)
+		end
+		pushLog(player, "To", "Target: " .. targets[1].Name)
+		return
+	end
+
+	if action == "God" or action == "Ungod" then
+		if #targets == 0 then table.insert(targets, player) end
+		local god = (action == "God")
+		for _, target in ipairs(targets) do
+			local char = target.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hum then
+				pcall(function()
+					if god then
+						hum.MaxHealth = 1000000
+						hum.Health = 1000000
+						if not char:FindFirstChildOfClass("ForceField") then
+							local ff = Instance.new("ForceField")
+							ff.Parent = char
+						end
+						char:SetAttribute("AdminGod", true)
+					else
+						local ff = char:FindFirstChildOfClass("ForceField")
+						if ff then ff:Destroy() end
+						hum.MaxHealth = 100
+						hum.Health = 100
+						char:SetAttribute("AdminGod", nil)
+					end
+				end)
+			end
+		end
+		pushLog(player, action, "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Respawn" then
+		if #targets == 0 then table.insert(targets, player) end
+		for _, target in ipairs(targets) do
+			pcall(function() target:LoadCharacter() end)
+		end
+		pushLog(player, "Respawn", "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Speed" then
+		if #targets == 0 then table.insert(targets, player) end
+		local speed = math.clamp(tonumber(payload.value) or 16, 0, 500)
+		for _, target in ipairs(targets) do
+			local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum.WalkSpeed = speed end) end
+		end
+		pushLog(player, "Speed", "Targets: " .. targetStr .. " | Speed: " .. speed)
+		return
+	end
+
+	if action == "JumpPower" then
+		if #targets == 0 then table.insert(targets, player) end
+		local jump = math.clamp(tonumber(payload.value) or 50, 0, 1000)
+		for _, target in ipairs(targets) do
+			local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum.UseJumpPower = true; hum.JumpPower = jump end) end
+		end
+		pushLog(player, "JumpPower", "Targets: " .. targetStr .. " | Jump: " .. jump)
+		return
+	end
+
+	if action == "Sit" or action == "Unsit" then
+		if #targets == 0 then table.insert(targets, player) end
+		local sitting = (action == "Sit")
+		for _, target in ipairs(targets) do
+			local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum.Sit = sitting end) end
+		end
+		pushLog(player, action, "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Nuke" then
+		if #targets == 0 then return end
+		for _, target in ipairs(targets) do
+			local root = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+			if root then explodeAt(root.Position, player, 60, 250) end
+		end
+		pushLog(player, "Nuke", "Targets: " .. targetStr)
+		return
+	end
+
+	if action == "Restart" then
+		if rank < BAN_RANK then return end
+		pushLog(player, "Restart", "Server restart initiated")
+		local ok, err = pcall(function()
+			TeleportService:TeleportAsync(game.PlaceId, Players:GetPlayers())
+		end)
+		if not ok then warn("[AdminServer] restart failed: " .. tostring(err)) end
+		return
+	end
+
+	if action == "Shutdown" then
+		if rank < BAN_RANK then return end
+		pushLog(player, "Shutdown", "Server shutdown initiated")
+		for _, p in ipairs(Players:GetPlayers()) do
+			task.spawn(function()
+				task.wait(math.random(0, 20) / 10)
+				p:Kick("Сервер выключается админом. Пожалуйста, зайдите позже.")
+			end)
+		end
+		return
+	end
+
+	if action == "LockServer" or action == "UnlockServer" then
+		if rank < BAN_RANK then return end
+		serverLocked = (action == "LockServer")
+		pushLog(player, action, serverLocked and "Locked" or "Unlocked")
+		if serverLocked then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if getRank(p) < MOD_RANK then
+					p:Kick("Сервер закрыт администрацией.")
+				end
+			end
+		end
+		return
+	end
+
+	if action == "UnbanAll" then
+		if rank < BAN_RANK then return end
+		local removed = 0
+		local ok, pages = pcall(function() return banStore:ListKeysAsync("ban_", 50) end)
+		if ok and pages then
+			local currentPage = pages
+			local guard = 0
+			repeat
+				for _, item in ipairs(currentPage:GetCurrentPage()) do
+					if string.match(item.KeyName, "^ban_%d+$") then
+						pcall(function() banStore:RemoveAsync(item.KeyName) end)
+						removed += 1
+					end
+				end
+				if currentPage.IsFinished then break end
+				currentPage:AdvanceToNextPageAsync()
+				guard += 1
+			until guard >= 20
+		end
+		pushLog(player, "UnbanAll", "Removed: " .. removed)
+		return
+	end
 end)
 
 -- ===== LIGHTING =====
@@ -461,25 +843,140 @@ lightingRemote.OnServerEvent:Connect(function(player, action, data, data2, data3
 	end
 end)
 
--- ===== BAN =====
-banRemote.OnServerEvent:Connect(function(player, action, userId, reason, durationHours)
-	if getRank(player) < BAN_RANK then return end
-	if type(userId) ~= "number" or userId <= 0 then return end
-	if action == "ban" then
-		local r = sanitizeText(reason, 200)
-		if r == "" then r = "без причины" end
-		local dur = tonumber(durationHours) or 0
-		setBan(userId, r, dur)
-		local target = Players:GetPlayerByUserId(userId)
-		if target then 
-			local timeStr = dur > 0 and ("на " .. dur .. " ч.") or "навсегда"
-			target:Kick("Вы забанены " .. timeStr .. ". Причина: " .. r) 
-		end
-		pushLog(player, "Ban", "Target ID: " .. userId .. " | Reason: " .. r .. " | Hours: " .. dur)
-	elseif action == "unban" then
-		clearBan(userId)
-		pushLog(player, "Unban", "Target ID: " .. userId)
+-- ===== BAN ACTIONS =====
+local lastBanAction: {[number]: number} = {}
+
+local function canBan(admin: Player, targetUserId: number): (boolean, string?)
+	if targetUserId == admin.UserId then return false, "Нельзя забанить самого себя" end
+	if targetUserId == OWNER_ID_1 or targetUserId == OWNER_ID_2 then
+		return false, "Нельзя забанить владельца"
 	end
+	local adminRank = getRank(admin)
+	if adminRank < BAN_RANK then return false, "Недостаточно прав" end
+	if admin.UserId ~= OWNER_ID_1 and admin.UserId ~= OWNER_ID_2 then
+		if targetUserId == FRIEND_ID then return false, "Нельзя забанить этого пользователя" end
+	end
+	local targetPlayer = Players:GetPlayerByUserId(targetUserId)
+	if targetPlayer and getRank(targetPlayer) >= adminRank then
+		return false, "Нельзя забанить пользователя с равными или большими правами"
+	end
+	return true, nil
+end
+
+local function handleBanRequest(player: Player, action: any, target: any, duration: any, reason: any): {[string]: any}
+	if getRank(player) < BAN_RANK then return {ok = false, message = "Недостаточно прав"} end
+
+	local now = os.clock()
+	if now - (lastBanAction[player.UserId] or -math.huge) < 0.5 then
+		return {ok = false, message = "Слишком быстро, подождите секунду"}
+	end
+	lastBanAction[player.UserId] = now
+
+	local targetId: number? = nil
+	local targetName: string? = nil
+
+	if type(target) == "number" then
+		targetId = math.floor(target)
+		if targetId <= 0 then return {ok = false, message = "Некорректный ID"} end
+	elseif type(target) == "string" then
+		local raw = sanitizeText(target, 50)
+		if raw == "" then return {ok = false, message = "Введите ID или ник"} end
+		if string.match(raw, "^%d+$") then
+			targetId = tonumber(raw)
+		else
+			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(raw) end)
+			if not ok or type(uid) ~= "number" then
+				return {ok = false, message = "Игрок '" .. raw .. "' не найден"}
+			end
+			targetId = uid
+			targetName = raw
+		end
+	end
+	if not targetId then return {ok = false, message = "Некорректная цель"} end
+
+	if action == "ban" then
+		local allowed, err = canBan(player, targetId)
+		if not allowed then return {ok = false, message = err or "Запрещено"} end
+
+		local secs, durErr = durationToSeconds(duration)
+		if durErr then return {ok = false, message = durErr} end
+
+		local r = sanitizeText(reason, 150)
+		if r == "" then r = "без причины" end
+
+		local data = {
+			reason = r,
+			at = os.time(),
+			untilTime = secs > 0 and (os.time() + secs) or nil,
+			duration = secs,
+			adminName = player.Name,
+			adminId = player.UserId,
+			jobId = jobId,
+			targetName = targetName,
+			banId = HttpService:GenerateGUID(false),
+		}
+		if not setBan(targetId, data) then
+			return {ok = false, message = "Ошибка сохранения бана (DataStore)"}
+		end
+
+		local targetPlayer = Players:GetPlayerByUserId(targetId)
+		if targetPlayer then
+			local timeStr = secs > 0 and formatDuration(secs) or "навсегда"
+			targetPlayer:Kick("Вы забанены. Срок: " .. timeStr .. ". Причина: " .. string.sub(r, 1, 100) .. ". Выдал: " .. player.Name)
+		end
+
+		pushLog(player, "Ban", "Target: " .. (targetName or targetId) .. " | ID: " .. targetId .. " | Reason: " .. r .. " | Duration: " .. (secs > 0 and formatDuration(secs) or "permanent"))
+		return {ok = true, message = "Забанен " .. (secs > 0 and ("на " .. formatDuration(secs)) or "навсегда"), userId = targetId, name = targetName or resolveUserName(targetId)}
+	end
+
+	if action == "unban" then
+		local data = getBan(targetId)
+		if not data then return {ok = false, message = "Этот игрок не забанен"} end
+		if not clearBan(targetId) then
+			return {ok = false, message = "Ошибка удаления бана (DataStore)"}
+		end
+		pushLog(player, "Unban", "Target: " .. (data.targetName or targetId) .. " | ID: " .. targetId)
+		return {ok = true, message = "Игрок разбанен", userId = targetId}
+	end
+
+	if action == "edit" then
+		local data = getBan(targetId)
+		if not data then return {ok = false, message = "Этот игрок не забанен"} end
+
+		local secs, durErr = durationToSeconds(duration)
+		if durErr then return {ok = false, message = durErr} end
+
+		local oldTime = type(data.untilTime) == "number" and formatDuration(math.max(0, data.untilTime - os.time())) or "навсегда"
+		data.duration = secs
+		data.untilTime = secs > 0 and (os.time() + secs) or nil
+		data.editedAt = os.time()
+		data.editedBy = player.Name
+		local newReason = sanitizeText(reason, 150)
+		if newReason ~= "" then data.reason = newReason end
+		if not setBan(targetId, data) then
+			return {ok = false, message = "Ошибка сохранения бана (DataStore)"}
+		end
+
+		pushLog(player, "BanEdit", "Target ID: " .. targetId .. " | " .. oldTime .. " -> " .. (secs > 0 and formatDuration(secs) or "permanent"))
+		return {ok = true, message = "Срок бана изменён", userId = targetId}
+	end
+
+	if action == "info" then
+		local data = getBan(targetId)
+		if not data then return {ok = false, message = "Не забанен"} end
+		return {ok = true, message = "Забанен", ban = data}
+	end
+
+	return {ok = false, message = "Неизвестное действие"}
+end
+
+banRequest.OnServerInvoke = handleBanRequest
+
+-- Старый RemoteEvent оставлен для совместимости (сторонние скрипты)
+banRemote.OnServerEvent:Connect(function(player, action, userId, reason, durationHours)
+	if type(userId) ~= "number" or userId <= 0 then return end
+	local duration = tonumber(durationHours) or 0
+	handleBanRequest(player, action, userId, {value = duration, unit = "h"}, reason)
 end)
 
 -- ===== DELETE LOG =====
@@ -528,41 +1025,121 @@ execRemote.OnServerEvent:Connect(function(player, mode, code)
 end)
 
 -- ===== REQUEST =====
-requestRemote.OnServerInvoke = function(player, kind)
+requestRemote.OnServerInvoke = function(player, kind): any
 	local rank = getRank(player)
 	if kind == "rank" then return rank >= MIN_RANK and rank or nil end
 	if rank < MIN_RANK then return nil end
 
-	if kind == "places" then return PLACES_LIST
+	if kind == "places" then
+		return PLACES_LIST
 	elseif kind == "banned" then
 		if rank < BAN_RANK then return {} end
-		local list = {}
+		local list: {[number]: any} = {}
 		local ok, pages = pcall(function() return banStore:ListKeysAsync("ban_", 50) end)
 		if ok and pages then
-			for _, item in ipairs(pages:GetCurrentPage()) do
-				local id = tonumber(string.match(item.KeyName, "ban_(%d+)"))
-				if id then
-					local ok2, data = pcall(function() return banStore:GetAsync(item.KeyName) end)
-					if ok2 and data then 
-						if not data.untilTime or os.time() <= data.untilTime then table.insert(list, {userId = id, reason = data.reason}) end
+			local currentPage = pages
+			local keys = {}
+			local guard = 0
+			repeat
+				for _, item in ipairs(currentPage:GetCurrentPage()) do
+					if string.match(item.KeyName, "^ban_%d+$") then
+						table.insert(keys, item.KeyName)
 					end
+					if #keys >= 100 then break end
+				end
+				if #keys >= 100 or currentPage.IsFinished then break end
+				currentPage:AdvanceToNextPageAsync()
+				guard += 1
+			until guard >= 10
+
+			local pending = 0
+			for _, key in ipairs(keys) do
+				local id = tonumber(string.match(key, "ban_(%d+)"))
+				if id then
+					pending += 1
+					task.spawn(function()
+						local ok2, data = pcall(function() return banStore:GetAsync(key) end)
+						if ok2 and type(data) == "table" then
+							if not (type(data.untilTime) == "number" and os.time() > data.untilTime) then
+								table.insert(list, {
+									userId = id,
+									reason = data.reason,
+									at = data.at,
+									untilTime = data.untilTime,
+									duration = data.duration,
+									adminName = data.adminName,
+									name = nameCache[id] or data.targetName,
+									remaining = type(data.untilTime) == "number" and formatDuration(math.max(0, data.untilTime - os.time())) or "навсегда",
+									expires = type(data.untilTime) == "number" and os.date("%d.%m.%Y %H:%M", tonumber(data.untilTime) or os.time()) or "никогда",
+								})
+							end
+						end
+						pending -= 1
+					end)
+				end
+			end
+
+			local t0 = os.clock()
+			while pending > 0 and os.clock() - t0 < 8 do task.wait(0.05) end
+
+			-- Догружаем ники, которых нет в кэше (не более 3 секунд)
+			local t1 = os.clock()
+			for _, entry in ipairs(list) do
+				if not entry.name and os.clock() - t1 < 3 then
+					entry.name = resolveUserName(entry.userId)
 				end
 			end
 		end
+		table.sort(list, function(a, b) return (a.at or 0) > (b.at or 0) end)
 		return list
 	elseif kind == "logs" then
 		if rank < BAN_RANK then return {} end
-		saveLogsToDataStore(); task.wait(0.5) 
-		local list = {}
+		saveLogsToDataStore(); task.wait(0.5)
+		local list: {[number]: any} = {}
 		local ok, pages = pcall(function() return logStore:ListKeysAsync("log_", 50) end)
 		if ok and pages then
-			for _, item in ipairs(pages:GetCurrentPage()) do
-				local ok2, data = pcall(function() return logStore:GetAsync(item.KeyName) end)
-				if ok2 and data then table.insert(list, data) end
+			local currentPage = pages
+			local keys = {}
+			local guard = 0
+			repeat
+				for _, item in ipairs(currentPage:GetCurrentPage()) do
+					if string.match(item.KeyName, "^log_") then
+						table.insert(keys, item.KeyName)
+					end
+					if #keys >= 100 then break end
+				end
+				if #keys >= 100 or currentPage.IsFinished then break end
+				currentPage:AdvanceToNextPageAsync()
+				guard += 1
+			until guard >= 10
+
+			local pending = 0
+			for _, key in ipairs(keys) do
+				pending += 1
+				task.spawn(function()
+					local ok2, data = pcall(function() return logStore:GetAsync(key) end)
+					if ok2 and type(data) == "table" then table.insert(list, data) end
+					pending -= 1
+				end)
 			end
+			local t0 = os.clock()
+			while pending > 0 and os.clock() - t0 < 8 do task.wait(0.05) end
 		end
 		table.sort(list, function(a, b) return (a.timestamp or 0) > (b.timestamp or 0) end)
 		return list
+	elseif kind == "serverInfo" then
+		if rank < MOD_RANK then return nil end
+		local memory = 0
+		pcall(function() memory = math.floor(game:GetService("Stats"):GetTotalMemoryUsageMb()) end)
+		return {
+			jobId = jobId,
+			placeId = game.PlaceId,
+			players = #Players:GetPlayers(),
+			maxPlayers = Players.MaxPlayers,
+			uptime = os.time() - SERVER_START,
+			memory = memory,
+			locked = serverLocked,
+		}
 	end
 	return nil
 end
