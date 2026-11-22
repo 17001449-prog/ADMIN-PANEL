@@ -14,6 +14,7 @@ local explodeRemote  = remotes:WaitForChild("AdminExplode")
 local lightingRemote = remotes:WaitForChild("AdminLighting")
 local logRemote      = remotes:WaitForChild("AdminLog")
 local execRemote     = remotes:WaitForChild("AdminExec")
+local banRequest     = remotes:WaitForChild("AdminBanRequest")
 
 -- ===== UI-настройки =====
 local MOD_RANK = 254
@@ -50,6 +51,10 @@ if myRank < 3 then return end
 local isMod    = myRank >= MOD_RANK
 local isBanner = myRank >= BAN_RANK
 
+local banReload: (() -> ())? = nil
+local logsReload: (() -> ())? = nil
+local serverReload: (() -> ())? = nil
+
 -- ===== GUI =====
 local gui = Instance.new("ScreenGui")
 gui.Name = "AdminTeleportGui"
@@ -85,29 +90,35 @@ tabBar.BackgroundColor3 = COLORS.DARK_TAB
 tabBar.BorderSizePixel = 0
 tabBar.Parent = mainFrame
 
-local function makeTab(text, xPos, active)
+local TAB_WIDTH = 72
+local tabIndex = 0
+local function makeTab(text: string, active: boolean?): TextButton
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0, 90, 1, 0)
-	b.Position = UDim2.new(0, xPos, 0, 0)
+	b.Size = UDim2.new(0, TAB_WIDTH, 1, 0)
+	b.Position = UDim2.new(0, tabIndex * TAB_WIDTH, 0, 0)
+	tabIndex += 1
 	b.BackgroundColor3 = active and COLORS.WHITE_BG or COLORS.DARK_TAB
 	b.TextColor3 = COLORS.BLACK_TEXT
 	b.Text = text
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 13
+	b.TextSize = 12
 	b.BorderSizePixel = 0
 	b.Parent = tabBar
 	return b
 end
 
-local tabTeleport = makeTab("TELEPORT", 0, true)
-local tabMod, tabTools, tabChar, tabLight, tabBan, tabLogs, tabScript
-if isMod    then tabMod   = makeTab("MOD", 90, false) end
-if isMod    then tabTools = makeTab("TOOLS", 180, false) end
-if isMod    then tabChar  = makeTab("CHAR", 270, false) end
-if isMod    then tabLight = makeTab("LIGHTING", 360, false) end
-if isBanner then tabBan   = makeTab("BAN", 450, false) end
-if isBanner then tabLogs  = makeTab("LOGS", 540, false) end
-if isBanner then tabScript = makeTab("SCRIPT", 630, false) end
+local tabTeleport = makeTab("TELEPORT", true)
+local tabPlayers, tabMod, tabTools, tabChar, tabLight, tabBan, tabLogs, tabServer, tabScript
+if isMod    then tabPlayers = makeTab("PLAYERS") end
+if isMod    then tabMod   = makeTab("MOD") end
+if isMod    then tabTools = makeTab("TOOLS") end
+if isMod    then tabChar  = makeTab("CHAR") end
+if isMod    then tabLight = makeTab("LIGHTING") end
+if isBanner then tabBan   = makeTab("BAN") end
+if isBanner then tabLogs  = makeTab("LOGS") end
+if isBanner then tabServer = makeTab("SERVER") end
+if isBanner then tabScript = makeTab("SCRIPT") end
+
 
 local contentArea = Instance.new("Frame")
 contentArea.Size = UDim2.new(1, -40, 1, -60)
@@ -324,6 +335,175 @@ tpBtn.MouseButton1Click:Connect(function()
 	actionRemote:FireServer("Teleport", ids, {placeId = selectedPlaceId})
 	tpBtn.Text = "✓ SENT"; task.wait(1); tpBtn.Text = "TP"
 end)
+
+-- =====================================================
+-- ВКЛАДКА PLAYERS (доп. действия с игроками)
+-- =====================================================
+local playersFrame: Frame?
+if isMod then
+	playersFrame = Instance.new("Frame")
+	playersFrame.Size = UDim2.new(1, 0, 1, 0); playersFrame.BackgroundTransparency = 1
+	playersFrame.Visible = false; playersFrame.Parent = contentArea
+
+	local playersSelected = makePlayersPanel(playersFrame)
+
+	local right = Instance.new("Frame")
+	right.Size = UDim2.new(0.55, -10, 1, 0); right.Position = UDim2.new(0.45, 10, 0, 0)
+	right.BackgroundTransparency = 1; right.Parent = playersFrame
+
+	local function makeBox(placeholder: string, y: number, w: number, text: string?): TextBox
+		local b = Instance.new("TextBox")
+		b.Size = UDim2.new(w, 0, 0, 34); b.Position = UDim2.new(0, 0, 0, y)
+		b.BackgroundColor3 = COLORS.WHITE_BG; b.TextColor3 = COLORS.BLACK_TEXT
+		b.PlaceholderText = placeholder; b.PlaceholderColor3 = COLORS.GRAY_TEXT
+		b.Text = text or ""; b.Font = Enum.Font.Gotham; b.TextSize = 14
+		b.ClearTextOnFocus = false; b.BorderSizePixel = 1
+		b.BorderColor3 = COLORS.BORDER; b.ZIndex = 2; b.Parent = right
+		local p = Instance.new("UIPadding"); p.PaddingLeft = UDim.new(0, 8); p.Parent = b
+		return b
+	end
+
+	local msgBox = makeBox("Сообщение / причина...", 0, 1)
+	local speedBox = makeBox("16", 44, 0.18, "16")
+	local jumpBox = makeBox("50", 44, 0.18, "50")
+	jumpBox.Position = UDim2.new(0.19, 0, 0, 44)
+	local durBox = makeBox("5", 44, 0.18, "5")
+	durBox.Position = UDim2.new(0.38, 0, 0, 44)
+
+	local hint = Instance.new("TextLabel")
+	hint.Size = UDim2.new(0.42, 0, 0, 34); hint.Position = UDim2.new(0.58, 0, 0, 44)
+	hint.BackgroundTransparency = 1; hint.TextColor3 = COLORS.GRAY_TEXT
+	hint.Text = "SPEED / JUMP / DURATION"; hint.Font = Enum.Font.GothamBold
+	hint.TextSize = 10; hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.Parent = right
+
+	local grid = Instance.new("Frame")
+	grid.Size = UDim2.new(1, 0, 1, -90); grid.Position = UDim2.new(0, 0, 0, 90)
+	grid.BackgroundTransparency = 1; grid.Parent = right
+
+	local function flash(btn: TextButton, text: string)
+		local old = btn.Text
+		btn.Text = text
+		task.delay(0.8, function() if btn.Parent then btn.Text = old end end)
+	end
+
+	local function actionBtn(text: string, color: Color3, row: number, col: number, onClick: (TextButton) -> ()): TextButton
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(0.5, -5, 0, 38)
+		b.Position = UDim2.new(col == 1 and 0 or 0.5, col == 1 and 0 or 5, 0, (row - 1) * 44)
+		b.BackgroundColor3 = color; b.TextColor3 = COLORS.WHITE_BG
+		b.Text = text; b.Font = Enum.Font.GothamBold; b.TextSize = 13
+		b.BorderSizePixel = 0; b.ZIndex = 5; b.Parent = grid
+		b.MouseButton1Click:Connect(function() onClick(b) end)
+		return b
+	end
+
+	local function idsOrSelf(): {number}
+		local ids = collectSelected(playersSelected)
+		if #ids == 0 then ids = {player.UserId} end
+		return ids
+	end
+
+	local function requireIds(btn: TextButton): {number}
+		local ids = collectSelected(playersSelected)
+		if #ids == 0 then flash(btn, "NO P") end
+		return ids
+	end
+
+	actionBtn("HINT", COLORS.SELECT_BG, 1, 1, function(btn)
+		actionRemote:FireServer("Hint", {}, {text = msgBox.Text, duration = tonumber(durBox.Text) or 5})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("MESSAGE", COLORS.SELECT_BG, 1, 2, function(btn)
+		actionRemote:FireServer("Message", {}, {text = msgBox.Text, duration = tonumber(durBox.Text) or 5})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("KICK", COLORS.YELLOW_BTN, 2, 1, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("Kick", ids, {text = msgBox.Text})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("KILL", COLORS.RED_BTN, 2, 2, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("Kill", ids, {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("FREEZE", COLORS.BLUE_BTN, 3, 1, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("Freeze", ids, {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("UNFREEZE", COLORS.BLUE_BTN, 3, 2, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("Unfreeze", ids, {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("BRING", COLORS.PURPLE_BTN, 4, 1, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("Bring", ids, {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("TP TO", COLORS.PURPLE_BTN, 4, 2, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("To", ids, {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("GOD", COLORS.GREEN_BTN, 5, 1, function(btn)
+		actionRemote:FireServer("God", idsOrSelf(), {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("UNGOD", COLORS.GREEN_BTN, 5, 2, function(btn)
+		actionRemote:FireServer("Ungod", idsOrSelf(), {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("RESPAWN", COLORS.BLUE_BTN, 6, 1, function(btn)
+		actionRemote:FireServer("Respawn", idsOrSelf(), {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("NUKE", COLORS.RED_BTN, 6, 2, function(btn)
+		local ids = requireIds(btn)
+		if #ids == 0 then return end
+		actionRemote:FireServer("Nuke", ids, {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("SPEED", COLORS.PURPLE_BTN, 7, 1, function(btn)
+		actionRemote:FireServer("Speed", idsOrSelf(), {value = tonumber(speedBox.Text) or 16})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("JUMP", COLORS.PURPLE_BTN, 7, 2, function(btn)
+		actionRemote:FireServer("JumpPower", idsOrSelf(), {value = tonumber(jumpBox.Text) or 50})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("SIT", COLORS.SELECT_BG, 8, 1, function(btn)
+		actionRemote:FireServer("Sit", idsOrSelf(), {})
+		flash(btn, "✓")
+	end)
+
+	actionBtn("UNSIT", COLORS.SELECT_BG, 8, 2, function(btn)
+		actionRemote:FireServer("Unsit", idsOrSelf(), {})
+		flash(btn, "✓")
+	end)
+end
 
 -- =====================================================
 -- ВКЛАДКА MODERATOR
@@ -706,109 +886,239 @@ if isBanner then
 	local left = Instance.new("Frame")
 	left.Size = UDim2.new(0.45, -10, 1, 0); left.BackgroundTransparency = 1; left.Parent = banFrame
 
-	local idLabel = Instance.new("TextLabel")
-	idLabel.Size = UDim2.new(1, 0, 0, 24); idLabel.BackgroundTransparency = 1
-	idLabel.TextColor3 = COLORS.BLACK_TEXT; idLabel.Text = "USER ID"
-	idLabel.Font = Enum.Font.GothamBold; idLabel.TextSize = 14
-	idLabel.TextXAlignment = Enum.TextXAlignment.Left; idLabel.Parent = left
+	local targetLabel = Instance.new("TextLabel")
+	targetLabel.Size = UDim2.new(1, 0, 0, 22); targetLabel.BackgroundTransparency = 1
+	targetLabel.TextColor3 = COLORS.BLACK_TEXT; targetLabel.Text = "USER ID ИЛИ НИК"
+	targetLabel.Font = Enum.Font.GothamBold; targetLabel.TextSize = 14
+	targetLabel.TextXAlignment = Enum.TextXAlignment.Left; targetLabel.Parent = left
 
 	local idBox = Instance.new("TextBox")
-	idBox.Size = UDim2.new(1, 0, 0, 35); idBox.Position = UDim2.new(0, 0, 0, 30)
+	idBox.Size = UDim2.new(1, 0, 0, 34); idBox.Position = UDim2.new(0, 0, 0, 24)
 	idBox.BackgroundColor3 = COLORS.WHITE_BG; idBox.TextColor3 = COLORS.BLACK_TEXT
-	idBox.PlaceholderText = "123456789"; idBox.PlaceholderColor3 = COLORS.GRAY_TEXT
+	idBox.PlaceholderText = "123456789 или NickName"; idBox.PlaceholderColor3 = COLORS.GRAY_TEXT
 	idBox.Text = ""; idBox.Font = Enum.Font.Gotham; idBox.TextSize = 14
 	idBox.ClearTextOnFocus = false; idBox.BorderSizePixel = 1
 	idBox.BorderColor3 = COLORS.BORDER; idBox.Parent = left
 	local ib = Instance.new("UIPadding"); ib.PaddingLeft = UDim.new(0, 8); ib.Parent = idBox
 
+	local durLabel = Instance.new("TextLabel")
+	durLabel.Size = UDim2.new(1, 0, 0, 20); durLabel.Position = UDim2.new(0, 0, 0, 68)
+	durLabel.BackgroundTransparency = 1; durLabel.TextColor3 = COLORS.BLACK_TEXT
+	durLabel.Text = "СРОК (0 = НАВСЕГДА)"; durLabel.Font = Enum.Font.GothamBold
+	durLabel.TextSize = 13; durLabel.TextXAlignment = Enum.TextXAlignment.Left; durLabel.Parent = left
+
+	local durBox = Instance.new("TextBox")
+	durBox.Size = UDim2.new(0.3, 0, 0, 34); durBox.Position = UDim2.new(0, 0, 0, 90)
+	durBox.BackgroundColor3 = COLORS.WHITE_BG; durBox.TextColor3 = COLORS.BLACK_TEXT
+	durBox.Text = "1"; durBox.Font = Enum.Font.Gotham; durBox.TextSize = 14
+	durBox.ClearTextOnFocus = false; durBox.BorderSizePixel = 1
+	durBox.BorderColor3 = COLORS.BORDER; durBox.Parent = left
+	local db = Instance.new("UIPadding"); db.PaddingLeft = UDim.new(0, 8); db.Parent = durBox
+
+	local units = {"SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "YEAR", "PERM"}
+	local unitCodes = {SECOND = "s", MINUTE = "m", HOUR = "h", DAY = "d", WEEK = "w", MONTH = "mo", YEAR = "y"}
+	local currentUnit = "DAY"
+
+	local unitBtn = Instance.new("TextButton")
+	unitBtn.Size = UDim2.new(0.38, 0, 0, 34); unitBtn.Position = UDim2.new(0.32, 0, 0, 90)
+	unitBtn.BackgroundColor3 = COLORS.SELECT_BG; unitBtn.TextColor3 = COLORS.BLACK_TEXT
+	unitBtn.Text = "UNIT: DAY"; unitBtn.Font = Enum.Font.GothamBold; unitBtn.TextSize = 12
+	unitBtn.BorderSizePixel = 1; unitBtn.BorderColor3 = COLORS.BORDER
+	unitBtn.ZIndex = 3; unitBtn.Parent = left
+
+	local unitList = Instance.new("ScrollingFrame")
+	unitList.Size = UDim2.new(0.38, 0, 0, 160); unitList.Position = UDim2.new(0.32, 0, 0, 124)
+	unitList.BackgroundColor3 = COLORS.WHITE_BG; unitList.BorderSizePixel = 1
+	unitList.BorderColor3 = COLORS.BORDER; unitList.Visible = false
+	unitList.ScrollBarThickness = 4; unitList.ZIndex = 20; unitList.Parent = left
+	unitList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	local ul = Instance.new("UIListLayout"); ul.Padding = UDim.new(0, 2); ul.SortOrder = Enum.SortOrder.LayoutOrder; ul.Parent = unitList
+
+	for i, u in ipairs(units) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1, 0, 0, 28); b.BackgroundColor3 = COLORS.WHITE_BG
+		b.TextColor3 = COLORS.BLACK_TEXT; b.Text = u; b.Font = Enum.Font.GothamBold
+		b.TextSize = 12; b.BorderSizePixel = 0; b.ZIndex = 21; b.LayoutOrder = i; b.Parent = unitList
+		b.MouseButton1Click:Connect(function()
+			currentUnit = u
+			unitBtn.Text = "UNIT: " .. u
+			unitList.Visible = false
+			if u == "PERM" then durBox.Text = "0" end
+		end)
+	end
+	unitBtn.MouseButton1Click:Connect(function() unitList.Visible = not unitList.Visible end)
+
+	local presets = {
+		{"1H", "1", "HOUR"}, {"6H", "6", "HOUR"}, {"1D", "1", "DAY"}, {"3D", "3", "DAY"},
+		{"7D", "7", "DAY"}, {"30D", "30", "DAY"}, {"PERM", "0", "PERM"},
+	}
+	for i, preset in ipairs(presets) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1 / #presets, -2, 0, 26)
+		b.Position = UDim2.new((i - 1) / #presets, 0, 0, 128)
+		b.BackgroundColor3 = COLORS.SELECT_BG; b.TextColor3 = COLORS.BLACK_TEXT
+		b.Text = preset[1]; b.Font = Enum.Font.GothamBold; b.TextSize = 11
+		b.BorderSizePixel = 0; b.Parent = left
+		b.MouseButton1Click:Connect(function()
+			currentUnit = preset[3]
+			unitBtn.Text = "UNIT: " .. preset[3]
+			durBox.Text = preset[2]
+		end)
+	end
+
 	local reasonLabel = Instance.new("TextLabel")
-	reasonLabel.Size = UDim2.new(1, 0, 0, 24); reasonLabel.Position = UDim2.new(0, 0, 0, 75)
+	reasonLabel.Size = UDim2.new(1, 0, 0, 20); reasonLabel.Position = UDim2.new(0, 0, 0, 162)
 	reasonLabel.BackgroundTransparency = 1; reasonLabel.TextColor3 = COLORS.BLACK_TEXT
-	reasonLabel.Text = "REASON"; reasonLabel.Font = Enum.Font.GothamBold
-	reasonLabel.TextSize = 14; reasonLabel.TextXAlignment = Enum.TextXAlignment.Left; reasonLabel.Parent = left
+	reasonLabel.Text = "ПРИЧИНА"; reasonLabel.Font = Enum.Font.GothamBold
+	reasonLabel.TextSize = 13; reasonLabel.TextXAlignment = Enum.TextXAlignment.Left; reasonLabel.Parent = left
 
 	local reasonBox = Instance.new("TextBox")
-	reasonBox.Size = UDim2.new(1, 0, 0, 35); reasonBox.Position = UDim2.new(0, 0, 0, 105)
+	reasonBox.Size = UDim2.new(1, 0, 0, 34); reasonBox.Position = UDim2.new(0, 0, 0, 184)
 	reasonBox.BackgroundColor3 = COLORS.WHITE_BG; reasonBox.TextColor3 = COLORS.BLACK_TEXT
-	reasonBox.PlaceholderText = "Custom ban reason..."; reasonBox.PlaceholderColor3 = COLORS.GRAY_TEXT
+	reasonBox.PlaceholderText = "Своя причина..."; reasonBox.PlaceholderColor3 = COLORS.GRAY_TEXT
 	reasonBox.Text = ""; reasonBox.Font = Enum.Font.Gotham; reasonBox.TextSize = 14
 	reasonBox.ClearTextOnFocus = false; reasonBox.BorderSizePixel = 1
 	reasonBox.BorderColor3 = COLORS.BORDER; reasonBox.Parent = left
 	local rb = Instance.new("UIPadding"); rb.PaddingLeft = UDim.new(0, 8); rb.Parent = reasonBox
 
-	local durLabel = Instance.new("TextLabel")
-	durLabel.Size = UDim2.new(1, 0, 0, 24); durLabel.Position = UDim2.new(0, 0, 0, 150)
-	durLabel.BackgroundTransparency = 1; durLabel.TextColor3 = COLORS.BLACK_TEXT
-	durLabel.Text = "DURATION (HOURS, 0 = FOREVER)"; durLabel.Font = Enum.Font.GothamBold
-	durLabel.TextSize = 14; durLabel.TextXAlignment = Enum.TextXAlignment.Left; durLabel.Parent = left
-
-	local durBox = Instance.new("TextBox")
-	durBox.Size = UDim2.new(1, 0, 0, 35); durBox.Position = UDim2.new(0, 0, 0, 180)
-	durBox.BackgroundColor3 = COLORS.WHITE_BG; durBox.TextColor3 = COLORS.BLACK_TEXT
-	durBox.Text = "0"; durBox.Font = Enum.Font.Gotham; durBox.TextSize = 14
-	durBox.ClearTextOnFocus = false; durBox.BorderSizePixel = 1
-	durBox.BorderColor3 = COLORS.BORDER; durBox.Parent = left
-	local db = Instance.new("UIPadding"); db.PaddingLeft = UDim.new(0, 8); db.Parent = durBox
+	local reasons = {"Читы / Exploits", "Абуз багов", "Спам / Флуд", "Оскорбления", "Токсичность", "Обход бана", "Неадекват", "Другое"}
+	for i, reasonText in ipairs(reasons) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(0.25, -3, 0, 24)
+		b.Position = UDim2.new(((i - 1) % 4) * 0.25, 0, 0, 224 + math.floor((i - 1) / 4) * 26)
+		b.BackgroundColor3 = COLORS.SELECT_BG; b.TextColor3 = COLORS.BLACK_TEXT
+		b.Text = reasonText; b.Font = Enum.Font.Gotham; b.TextSize = 10
+		b.BorderSizePixel = 0; b.Parent = left
+		b.MouseButton1Click:Connect(function() reasonBox.Text = reasonText end)
+	end
 
 	local banBtn = Instance.new("TextButton")
-	banBtn.Size = UDim2.new(0.5, -5, 0, 45); banBtn.Position = UDim2.new(0, 0, 0, 230)
+	banBtn.Size = UDim2.new(0.34, -5, 0, 44); banBtn.Position = UDim2.new(0, 0, 0, 282)
 	banBtn.BackgroundColor3 = COLORS.RED_BTN; banBtn.TextColor3 = COLORS.WHITE_BG
 	banBtn.Text = "BAN"; banBtn.Font = Enum.Font.GothamBold
 	banBtn.TextSize = 16; banBtn.BorderSizePixel = 0; banBtn.Parent = left
 
 	local unbanBtn = Instance.new("TextButton")
-	unbanBtn.Size = UDim2.new(0.5, -5, 0, 45); unbanBtn.Position = UDim2.new(0.5, 5, 0, 230)
+	unbanBtn.Size = UDim2.new(0.32, -5, 0, 44); unbanBtn.Position = UDim2.new(0.34, 0, 0, 282)
 	unbanBtn.BackgroundColor3 = COLORS.GREEN_BTN; unbanBtn.TextColor3 = COLORS.WHITE_BG
 	unbanBtn.Text = "UNBAN"; unbanBtn.Font = Enum.Font.GothamBold
 	unbanBtn.TextSize = 16; unbanBtn.BorderSizePixel = 0; unbanBtn.Parent = left
 
+	local editBtn = Instance.new("TextButton")
+	editBtn.Size = UDim2.new(0.32, -5, 0, 44); editBtn.Position = UDim2.new(0.67, 0, 0, 282)
+	editBtn.BackgroundColor3 = COLORS.YELLOW_BTN; editBtn.TextColor3 = COLORS.WHITE_BG
+	editBtn.Text = "EDIT TIME"; editBtn.Font = Enum.Font.GothamBold
+	editBtn.TextSize = 16; editBtn.BorderSizePixel = 0; editBtn.Parent = left
+
 	local statusLabel = Instance.new("TextLabel")
-	statusLabel.Size = UDim2.new(1, 0, 0, 30); statusLabel.Position = UDim2.new(0, 0, 0, 285)
+	statusLabel.Size = UDim2.new(1, 0, 0, 50); statusLabel.Position = UDim2.new(0, 0, 0, 334)
 	statusLabel.BackgroundTransparency = 1; statusLabel.TextColor3 = COLORS.GRAY_TEXT
 	statusLabel.Text = ""; statusLabel.Font = Enum.Font.Gotham
-	statusLabel.TextSize = 13; statusLabel.TextXAlignment = Enum.TextXAlignment.Left; statusLabel.Parent = left
+	statusLabel.TextSize = 12; statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+	statusLabel.TextWrapped = true; statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+	statusLabel.Parent = left
 
 	local right = Instance.new("Frame")
 	right.Size = UDim2.new(0.55, -10, 1, 0); right.Position = UDim2.new(0.45, 10, 0, 0)
 	right.BackgroundTransparency = 1; right.Parent = banFrame
 
 	local listLabel = Instance.new("TextLabel")
-	listLabel.Size = UDim2.new(1, -80, 0, 24); listLabel.BackgroundTransparency = 1
+	listLabel.Size = UDim2.new(1, -160, 0, 22); listLabel.BackgroundTransparency = 1
 	listLabel.TextColor3 = COLORS.BLACK_TEXT; listLabel.Text = "BANNED PLAYERS"
 	listLabel.Font = Enum.Font.GothamBold; listLabel.TextSize = 14
 	listLabel.TextXAlignment = Enum.TextXAlignment.Left; listLabel.Parent = right
 
 	local reloadBtn = Instance.new("TextButton")
-	reloadBtn.Size = UDim2.new(0, 70, 0, 24); reloadBtn.Position = UDim2.new(1, -70, 0, 0)
+	reloadBtn.Size = UDim2.new(0, 80, 0, 24); reloadBtn.Position = UDim2.new(1, -80, 0, 0)
 	reloadBtn.BackgroundColor3 = COLORS.SELECT_BG; reloadBtn.TextColor3 = COLORS.BLACK_TEXT
 	reloadBtn.Text = "↻ RELOAD"; reloadBtn.Font = Enum.Font.GothamBold
 	reloadBtn.TextSize = 12; reloadBtn.BorderSizePixel = 0; reloadBtn.Parent = right
 
 	local scrollBanned = Instance.new("ScrollingFrame")
-	scrollBanned.Size = UDim2.new(1, 0, 1, -30); scrollBanned.Position = UDim2.new(0, 0, 0, 30)
+	scrollBanned.Size = UDim2.new(1, 0, 1, -28); scrollBanned.Position = UDim2.new(0, 0, 0, 28)
 	scrollBanned.BackgroundColor3 = COLORS.WHITE_BG; scrollBanned.BorderSizePixel = 1
 	scrollBanned.BorderColor3 = COLORS.BORDER; scrollBanned.ScrollBarThickness = 4; scrollBanned.Parent = right
 	local bp = Instance.new("UIPadding")
 	bp.PaddingTop = UDim.new(0, 4); bp.PaddingBottom = UDim.new(0, 4)
 	bp.PaddingLeft = UDim.new(0, 4); bp.PaddingRight = UDim.new(0, 4); bp.Parent = scrollBanned
 
+	durBox:GetPropertyChangedSignal("Text"):Connect(function()
+		if currentUnit == "PERM" and (tonumber(durBox.Text) or 0) > 0 then
+			currentUnit = "DAY"
+			unitBtn.Text = "UNIT: DAY"
+		end
+	end)
+
+	local function buildDuration(): any
+		if currentUnit == "PERM" then return 0 end
+		local value = tonumber(durBox.Text) or 1
+		if value <= 0 then return 0 end
+		return {value = value, unit = unitCodes[currentUnit]}
+	end
+
 	local function loadBanned()
+		statusLabel.Text = "Загрузка списка..."
 		scrollBanned:ClearAllChildren()
 		local layout = Instance.new("UIListLayout")
-		layout.Padding = UDim.new(0, 2); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = scrollBanned
+		layout.Padding = UDim.new(0, 3); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = scrollBanned
 
 		local ok, list = pcall(function() return requestRemote:InvokeServer("banned") end)
-		if not ok or type(list) ~= "table" then statusLabel.Text = "Ошибка загрузки"; return end
+		if not ok or type(list) ~= "table" then statusLabel.Text = "Ошибка загрузки списка"; return end
+
 		local i = 0
 		for _, entry in ipairs(list) do
 			i += 1
-			local b = Instance.new("TextButton")
-			b.Size = UDim2.new(1, 0, 0, 28); b.BackgroundColor3 = COLORS.WHITE_BG
-			b.TextColor3 = COLORS.BLACK_TEXT; b.Text = "  ID: " .. entry.userId .. " — " .. (entry.reason or "без причины")
-			b.TextXAlignment = Enum.TextXAlignment.Left; b.Font = Enum.Font.Gotham
-			b.TextSize = 13; b.LayoutOrder = i; b.BorderSizePixel = 0; b.Parent = scrollBanned
-			b.MouseButton1Click:Connect(function()
-				idBox.Text = tostring(entry.userId); reasonBox.Text = entry.reason or ""
+			local displayName = (entry.name and entry.name ~= "") and entry.name or ("ID " .. tostring(entry.userId))
+			local row = Instance.new("Frame")
+			row.Size = UDim2.new(1, 0, 0, 58)
+			row.BackgroundColor3 = COLORS.WHITE_BG
+			row.BorderSizePixel = 1; row.BorderColor3 = COLORS.BORDER
+			row.LayoutOrder = i; row.Parent = scrollBanned
+
+			local main = Instance.new("TextButton")
+			main.Size = UDim2.new(1, -36, 1, 0)
+			main.BackgroundTransparency = 1; main.Text = ""
+			main.ZIndex = 2; main.Parent = row
+			main.MouseButton1Click:Connect(function()
+				idBox.Text = tostring(entry.userId)
+				reasonBox.Text = entry.reason or ""
+				statusLabel.Text = "Выбран: " .. displayName .. " | Осталось: " .. tostring(entry.remaining or "навсегда")
+			end)
+
+			local l1 = Instance.new("TextLabel")
+			l1.Size = UDim2.new(1, -44, 0, 18); l1.Position = UDim2.new(0, 8, 0, 3)
+			l1.BackgroundTransparency = 1; l1.TextColor3 = COLORS.BLACK_TEXT
+			l1.Text = displayName .. "  [" .. tostring(entry.userId) .. "]" .. (entry.untilTime and "" or "  [PERM]")
+			l1.Font = Enum.Font.GothamBold; l1.TextSize = 13
+			l1.TextXAlignment = Enum.TextXAlignment.Left; l1.TextTruncate = Enum.TextTruncate.AtEnd
+			l1.ZIndex = 3; l1.Parent = row
+
+			local l2 = Instance.new("TextLabel")
+			l2.Size = UDim2.new(1, -44, 0, 16); l2.Position = UDim2.new(0, 8, 0, 21)
+			l2.BackgroundTransparency = 1; l2.TextColor3 = COLORS.GRAY_TEXT
+			l2.Text = tostring(entry.reason or "без причины") .. "  ·  " .. tostring(entry.remaining or "навсегда")
+			l2.Font = Enum.Font.Gotham; l2.TextSize = 10
+			l2.TextXAlignment = Enum.TextXAlignment.Left; l2.TextTruncate = Enum.TextTruncate.AtEnd
+			l2.ZIndex = 3; l2.Parent = row
+
+			local l3 = Instance.new("TextLabel")
+			l3.Size = UDim2.new(1, -44, 0, 16); l3.Position = UDim2.new(0, 8, 0, 37)
+			l3.BackgroundTransparency = 1; l3.TextColor3 = COLORS.GRAY_TEXT
+			l3.Text = "до: " .. tostring(entry.expires or "никогда") .. "  ·  админ: " .. tostring(entry.adminName or "неизвестно")
+			l3.Font = Enum.Font.Gotham; l3.TextSize = 10
+			l3.TextXAlignment = Enum.TextXAlignment.Left; l3.TextTruncate = Enum.TextTruncate.AtEnd
+			l3.ZIndex = 3; l3.Parent = row
+
+			local delBtn = Instance.new("TextButton")
+			delBtn.Size = UDim2.new(0, 30, 0, 30); delBtn.Position = UDim2.new(1, -33, 0.5, 0)
+			delBtn.AnchorPoint = Vector2.new(0, 0.5)
+			delBtn.BackgroundColor3 = COLORS.RED_BTN; delBtn.TextColor3 = COLORS.WHITE_BG
+			delBtn.Text = "✕"; delBtn.Font = Enum.Font.GothamBold; delBtn.TextSize = 14
+			delBtn.BorderSizePixel = 0; delBtn.ZIndex = 4; delBtn.Parent = row
+			delBtn.MouseButton1Click:Connect(function()
+				local okReq, res = pcall(function() return banRequest:InvokeServer("unban", entry.userId) end)
+				statusLabel.Text = (okReq and res) and tostring(res.message) or "Готово"
+				task.wait(0.3); loadBanned()
 			end)
 		end
 		scrollBanned.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
@@ -816,21 +1126,38 @@ if isBanner then
 	end
 
 	banBtn.MouseButton1Click:Connect(function()
-		local uid = tonumber(idBox.Text)
-		if not uid or uid <= 0 then statusLabel.Text = "Неверный ID"; return end
-		local dur = tonumber(durBox.Text) or 0
-		banRemote:FireServer("ban", uid, reasonBox.Text, dur)
-		statusLabel.Text = "Бан отправлен: " .. uid; task.wait(0.5); loadBanned()
+		local target = tonumber(idBox.Text) or idBox.Text
+		if target == nil or target == "" then statusLabel.Text = "Введите ID или ник"; return end
+		statusLabel.Text = "Отправка..."
+		local okReq, res = pcall(function() return banRequest:InvokeServer("ban", target, buildDuration(), reasonBox.Text) end)
+		if okReq and res and res.ok then
+			statusLabel.Text = "✅ " .. tostring(res.message)
+			task.wait(0.4); loadBanned()
+		else
+			statusLabel.Text = "❌ " .. tostring((okReq and res) and res.message or "Ошибка запроса")
+		end
 	end)
 
 	unbanBtn.MouseButton1Click:Connect(function()
-		local uid = tonumber(idBox.Text)
-		if not uid or uid <= 0 then statusLabel.Text = "Неверный ID"; return end
-		banRemote:FireServer("unban", uid, "")
-		statusLabel.Text = "Разбан отправлен: " .. uid; task.wait(0.5); loadBanned()
+		local target = tonumber(idBox.Text) or idBox.Text
+		if target == nil or target == "" then statusLabel.Text = "Введите ID или ник"; return end
+		statusLabel.Text = "Отправка..."
+		local okReq, res = pcall(function() return banRequest:InvokeServer("unban", target) end)
+		statusLabel.Text = (okReq and res and res.ok) and ("✅ " .. tostring(res.message)) or ("❌ " .. tostring((okReq and res) and res.message or "Ошибка запроса"))
+		task.wait(0.3); loadBanned()
+	end)
+
+	editBtn.MouseButton1Click:Connect(function()
+		local target = tonumber(idBox.Text) or idBox.Text
+		if target == nil or target == "" then statusLabel.Text = "Введите ID или ник"; return end
+		statusLabel.Text = "Отправка..."
+		local okReq, res = pcall(function() return banRequest:InvokeServer("edit", target, buildDuration(), reasonBox.Text) end)
+		statusLabel.Text = (okReq and res and res.ok) and ("✅ " .. tostring(res.message)) or ("❌ " .. tostring((okReq and res) and res.message or "Ошибка запроса"))
+		task.wait(0.3); loadBanned()
 	end)
 
 	reloadBtn.MouseButton1Click:Connect(loadBanned)
+	banReload = loadBanned
 	loadBanned()
 end
 
@@ -844,10 +1171,37 @@ if isBanner then
 	logsFrame.Visible = false; logsFrame.Parent = contentArea
 
 	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(1, -100, 0, 24); lbl.BackgroundTransparency = 1
-	lbl.TextColor3 = COLORS.BLACK_TEXT; lbl.Text = "SERVER LOGS (Latest 50)"
+	lbl.Size = UDim2.new(0, 200, 0, 24); lbl.BackgroundTransparency = 1
+	lbl.TextColor3 = COLORS.BLACK_TEXT; lbl.Text = "SERVER LOGS"
 	lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 14
 	lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = logsFrame
+
+	local filterBtn = Instance.new("TextButton")
+	filterBtn.Size = UDim2.new(0, 110, 0, 24); filterBtn.Position = UDim2.new(0, 205, 0, 0)
+	filterBtn.BackgroundColor3 = COLORS.SELECT_BG; filterBtn.TextColor3 = COLORS.BLACK_TEXT
+	filterBtn.Text = "FILTER: ALL"; filterBtn.Font = Enum.Font.GothamBold
+	filterBtn.TextSize = 12; filterBtn.BorderSizePixel = 1
+	filterBtn.BorderColor3 = COLORS.BORDER; filterBtn.ZIndex = 2; filterBtn.Parent = logsFrame
+
+	local filterList = Instance.new("ScrollingFrame")
+	filterList.Size = UDim2.new(0, 110, 0, 180); filterList.Position = UDim2.new(0, 205, 0, 24)
+	filterList.BackgroundColor3 = COLORS.WHITE_BG; filterList.BorderSizePixel = 1
+	filterList.BorderColor3 = COLORS.BORDER; filterList.Visible = false
+	filterList.ScrollBarThickness = 4; filterList.ZIndex = 20; filterList.Parent = logsFrame
+	filterList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	local fl = Instance.new("UIListLayout"); fl.Padding = UDim.new(0, 2); fl.SortOrder = Enum.SortOrder.LayoutOrder; fl.Parent = filterList
+
+	local filters = {"ALL", "BAN", "UNBAN", "BANEDIT", "KICK", "KILL", "TELEPORT", "LIGHTING", "EXECUTOR", "OTHER"}
+	local currentFilter = "ALL"
+
+	local searchBox = Instance.new("TextBox")
+	searchBox.Size = UDim2.new(1, -495, 0, 24); searchBox.Position = UDim2.new(0, 325, 0, 0)
+	searchBox.BackgroundColor3 = COLORS.WHITE_BG; searchBox.TextColor3 = COLORS.BLACK_TEXT
+	searchBox.PlaceholderText = "Поиск по логам..."; searchBox.PlaceholderColor3 = COLORS.GRAY_TEXT
+	searchBox.Text = ""; searchBox.Font = Enum.Font.Gotham; searchBox.TextSize = 12
+	searchBox.ClearTextOnFocus = false; searchBox.TextXAlignment = Enum.TextXAlignment.Left
+	searchBox.BorderSizePixel = 1; searchBox.BorderColor3 = COLORS.BORDER; searchBox.Parent = logsFrame
+	local sp = Instance.new("UIPadding"); sp.PaddingLeft = UDim.new(0, 6); sp.Parent = searchBox
 
 	local reloadLogsBtn = Instance.new("TextButton")
 	reloadLogsBtn.Size = UDim2.new(0, 80, 0, 24); reloadLogsBtn.Position = UDim2.new(1, -80, 0, 0)
@@ -863,48 +1217,243 @@ if isBanner then
 	lp.PaddingTop = UDim.new(0, 4); lp.PaddingBottom = UDim.new(0, 4)
 	lp.PaddingLeft = UDim.new(0, 4); lp.PaddingRight = UDim.new(0, 4); lp.Parent = scrollLogs
 
-	local function loadLogs()
+	local logsData: {[number]: {[string]: any}} = {}
+
+	local function matchesFilter(entry: {[string]: any}): boolean
+		if currentFilter == "ALL" then return true end
+		local actionName = string.lower(tostring(entry.action or ""))
+		if currentFilter == "OTHER" then
+			return actionName ~= "ban" and actionName ~= "unban" and actionName ~= "banedit"
+				and actionName ~= "kick" and actionName ~= "kill" and actionName ~= "teleport"
+				and actionName ~= "lighting" and actionName ~= "executor"
+		end
+		return string.find(actionName, string.lower(currentFilter), 1, true) ~= nil
+	end
+
+	local function renderLogs()
 		scrollLogs:ClearAllChildren()
 		local layout = Instance.new("UIListLayout")
 		layout.Padding = UDim.new(0, 2); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = scrollLogs
 
-		local ok, list = pcall(function() return requestRemote:InvokeServer("logs") end)
-		if not ok or type(list) ~= "table" then return end
+		local search = string.lower(searchBox.Text)
 		local i = 0
-		for _, entry in ipairs(list) do
-			i += 1
-			local date = os.date("%H:%M:%S", entry.timestamp)
-			local text = string.format("[%s] %s (%d) -> %s: %s", date, entry.adminName, entry.adminId, entry.action, entry.details)
-			if entry.jobId ~= "" then text = text .. " | Job: " .. entry.jobId:sub(1, 8) end
+		for _, entry in ipairs(logsData) do
+			local text = string.format("[%s] %s (%d) -> %s: %s",
+				os.date("%H:%M:%S", tonumber(entry.timestamp) or 0),
+				tostring(entry.adminName or "?"),
+				entry.adminId or 0,
+				tostring(entry.action or "?"),
+				tostring(entry.details or ""))
+			if entry.jobId and entry.jobId ~= "" then
+				text = text .. " | Job: " .. string.sub(entry.jobId, 1, 8)
+			end
+			if matchesFilter(entry) and (search == "" or string.find(string.lower(text), search, 1, true)) then
+				i += 1
+				local row = Instance.new("Frame")
+				row.Size = UDim2.new(1, 0, 0, 28); row.BackgroundTransparency = 1
+				row.LayoutOrder = i; row.Parent = scrollLogs
 
-			local row = Instance.new("Frame")
-			row.Size = UDim2.new(1, 0, 0, 28); row.BackgroundTransparency = 1
-			row.LayoutOrder = i; row.Parent = scrollLogs
+				local b = Instance.new("TextButton")
+				b.Size = UDim2.new(1, -30, 1, 0); b.BackgroundColor3 = COLORS.WHITE_BG
+				b.TextColor3 = COLORS.BLACK_TEXT; b.Text = " " .. text
+				b.TextXAlignment = Enum.TextXAlignment.Left; b.Font = Enum.Font.Code
+				b.TextSize = 13; b.BorderSizePixel = 0; b.Parent = row
+				b.MouseButton1Click:Connect(function()
+					if setclipboard then setclipboard(text) end
+				end)
 
-			local b = Instance.new("TextButton")
-			b.Size = UDim2.new(1, -30, 1, 0); b.BackgroundColor3 = COLORS.WHITE_BG
-			b.TextColor3 = COLORS.BLACK_TEXT; b.Text = " " .. text
-			b.TextXAlignment = Enum.TextXAlignment.Left; b.Font = Enum.Font.Code
-			b.TextSize = 13; b.BorderSizePixel = 0; b.Parent = row
-			b.MouseButton1Click:Connect(function()
-				if setclipboard then setclipboard(text) end
-			end)
-
-			local delBtn = Instance.new("TextButton")
-			delBtn.Size = UDim2.new(0, 30, 1, 0); delBtn.Position = UDim2.new(1, -30, 0, 0)
-			delBtn.BackgroundColor3 = COLORS.RED_BTN; delBtn.TextColor3 = COLORS.WHITE_BG
-			delBtn.Text = "✕"; delBtn.Font = Enum.Font.GothamBold; delBtn.TextSize = 14
-			delBtn.BorderSizePixel = 0; delBtn.Parent = row
-			delBtn.MouseButton1Click:Connect(function()
-				logRemote:FireServer(entry.logId)
-				row:Destroy()
-			end)
+				local delBtn = Instance.new("TextButton")
+				delBtn.Size = UDim2.new(0, 30, 1, 0); delBtn.Position = UDim2.new(1, -30, 0, 0)
+				delBtn.BackgroundColor3 = COLORS.RED_BTN; delBtn.TextColor3 = COLORS.WHITE_BG
+				delBtn.Text = "✕"; delBtn.Font = Enum.Font.GothamBold; delBtn.TextSize = 14
+				delBtn.BorderSizePixel = 0; delBtn.Parent = row
+				delBtn.MouseButton1Click:Connect(function()
+					logRemote:FireServer(entry.logId)
+					row:Destroy()
+				end)
+			end
 		end
 		scrollLogs.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
 	end
 
+	local function loadLogs()
+		local ok, list = pcall(function() return requestRemote:InvokeServer("logs") end)
+		if not ok or type(list) ~= "table" then return end
+		logsData = list
+		renderLogs()
+	end
+	logsReload = loadLogs
+
+	for i, f in ipairs(filters) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1, 0, 0, 28); b.BackgroundColor3 = COLORS.WHITE_BG
+		b.TextColor3 = COLORS.BLACK_TEXT; b.Text = f; b.Font = Enum.Font.GothamBold
+		b.TextSize = 12; b.BorderSizePixel = 0; b.ZIndex = 21; b.LayoutOrder = i; b.Parent = filterList
+		b.MouseButton1Click:Connect(function()
+			currentFilter = f
+			filterBtn.Text = "FILTER: " .. f
+			filterList.Visible = false
+			renderLogs()
+		end)
+	end
+	filterBtn.MouseButton1Click:Connect(function() filterList.Visible = not filterList.Visible end)
+
+	searchBox:GetPropertyChangedSignal("Text"):Connect(renderLogs)
 	reloadLogsBtn.MouseButton1Click:Connect(loadLogs)
 	loadLogs()
+end
+
+-- =====================================================
+-- ВКЛАДКА SERVER
+-- =====================================================
+local serverFrame: Frame?
+if isBanner then
+	serverFrame = Instance.new("Frame")
+	serverFrame.Size = UDim2.new(1, 0, 1, 0); serverFrame.BackgroundTransparency = 1
+	serverFrame.Visible = false; serverFrame.Parent = contentArea
+
+	local center = Instance.new("Frame")
+	center.Size = UDim2.new(0.7, 0, 1, 0); center.Position = UDim2.new(0.15, 0, 0, 0)
+	center.BackgroundTransparency = 1; center.Parent = serverFrame
+
+	local infoLabel = Instance.new("TextLabel")
+	infoLabel.Size = UDim2.new(1, 0, 0, 120)
+	infoLabel.BackgroundColor3 = COLORS.SELECT_BG
+	infoLabel.TextColor3 = COLORS.BLACK_TEXT
+	infoLabel.Text = "Загрузка..."
+	infoLabel.Font = Enum.Font.Code; infoLabel.TextSize = 13
+	infoLabel.TextXAlignment = Enum.TextXAlignment.Left; infoLabel.TextYAlignment = Enum.TextYAlignment.Top
+	infoLabel.BorderSizePixel = 1; infoLabel.BorderColor3 = COLORS.BORDER
+	infoLabel.Parent = center
+	local ip = Instance.new("UIPadding")
+	ip.PaddingLeft = UDim.new(0, 10); ip.PaddingTop = UDim.new(0, 10); ip.Parent = infoLabel
+
+	local refreshBtn = Instance.new("TextButton")
+	refreshBtn.Size = UDim2.new(1, 0, 0, 30); refreshBtn.Position = UDim2.new(0, 0, 0, 128)
+	refreshBtn.BackgroundColor3 = COLORS.SELECT_BG; refreshBtn.TextColor3 = COLORS.BLACK_TEXT
+	refreshBtn.Text = "↻ REFRESH INFO"; refreshBtn.Font = Enum.Font.GothamBold
+	refreshBtn.TextSize = 13; refreshBtn.BorderSizePixel = 0; refreshBtn.Parent = center
+
+	local announceBox = Instance.new("TextBox")
+	announceBox.Size = UDim2.new(1, 0, 0, 34); announceBox.Position = UDim2.new(0, 0, 0, 168)
+	announceBox.BackgroundColor3 = COLORS.WHITE_BG; announceBox.TextColor3 = COLORS.BLACK_TEXT
+	announceBox.PlaceholderText = "Текст объявления для всех игроков..."; announceBox.PlaceholderColor3 = COLORS.GRAY_TEXT
+	announceBox.Text = ""; announceBox.Font = Enum.Font.Gotham; announceBox.TextSize = 14
+	announceBox.ClearTextOnFocus = false; announceBox.BorderSizePixel = 1
+	announceBox.BorderColor3 = COLORS.BORDER; announceBox.Parent = center
+	local ap = Instance.new("UIPadding"); ap.PaddingLeft = UDim.new(0, 8); ap.Parent = announceBox
+
+	local announceBtn = Instance.new("TextButton")
+	announceBtn.Size = UDim2.new(1, 0, 0, 38); announceBtn.Position = UDim2.new(0, 0, 0, 208)
+	announceBtn.BackgroundColor3 = COLORS.PURPLE_BTN; announceBtn.TextColor3 = COLORS.WHITE_BG
+	announceBtn.Text = "📢 ANNOUNCE ALL"; announceBtn.Font = Enum.Font.GothamBold
+	announceBtn.TextSize = 14; announceBtn.BorderSizePixel = 0; announceBtn.Parent = center
+
+	local serverLockedState = false
+	local lockBtn = Instance.new("TextButton")
+	lockBtn.Size = UDim2.new(1, 0, 0, 38); lockBtn.Position = UDim2.new(0, 0, 0, 254)
+	lockBtn.BackgroundColor3 = COLORS.YELLOW_BTN; lockBtn.TextColor3 = COLORS.WHITE_BG
+	lockBtn.Text = "🔒 LOCK SERVER"; lockBtn.Font = Enum.Font.GothamBold
+	lockBtn.TextSize = 14; lockBtn.BorderSizePixel = 0; lockBtn.Parent = center
+
+	local restartBtn = Instance.new("TextButton")
+	restartBtn.Size = UDim2.new(1, 0, 0, 38); restartBtn.Position = UDim2.new(0, 0, 0, 298)
+	restartBtn.BackgroundColor3 = COLORS.BLUE_BTN; restartBtn.TextColor3 = COLORS.WHITE_BG
+	restartBtn.Text = "🔄 RESTART SERVER"; restartBtn.Font = Enum.Font.GothamBold
+	restartBtn.TextSize = 14; restartBtn.BorderSizePixel = 0; restartBtn.Parent = center
+
+	local unbanAllBtn = Instance.new("TextButton")
+	unbanAllBtn.Size = UDim2.new(1, 0, 0, 38); unbanAllBtn.Position = UDim2.new(0, 0, 0, 342)
+	unbanAllBtn.BackgroundColor3 = COLORS.GREEN_BTN; unbanAllBtn.TextColor3 = COLORS.WHITE_BG
+	unbanAllBtn.Text = "UNBAN ALL"; unbanAllBtn.Font = Enum.Font.GothamBold
+	unbanAllBtn.TextSize = 14; unbanAllBtn.BorderSizePixel = 0; unbanAllBtn.Parent = center
+
+	local shutdownBtn = Instance.new("TextButton")
+	shutdownBtn.Size = UDim2.new(1, 0, 0, 38); shutdownBtn.Position = UDim2.new(0, 0, 0, 386)
+	shutdownBtn.BackgroundColor3 = COLORS.RED_BTN; shutdownBtn.TextColor3 = COLORS.WHITE_BG
+	shutdownBtn.Text = "⛔ SHUTDOWN SERVER"; shutdownBtn.Font = Enum.Font.GothamBold
+	shutdownBtn.TextSize = 14; shutdownBtn.BorderSizePixel = 0; shutdownBtn.Parent = center
+
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.Size = UDim2.new(1, 0, 0, 40); statusLabel.Position = UDim2.new(0, 0, 0, 432)
+	statusLabel.BackgroundTransparency = 1; statusLabel.TextColor3 = COLORS.GRAY_TEXT
+	statusLabel.Text = ""; statusLabel.Font = Enum.Font.Gotham
+	statusLabel.TextSize = 12; statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+	statusLabel.TextWrapped = true; statusLabel.Parent = center
+
+	local function loadInfo()
+		local ok, info = pcall(function() return requestRemote:InvokeServer("serverInfo") end)
+		if not ok or type(info) ~= "table" then
+			infoLabel.Text = "Ошибка загрузки информации"
+			return
+		end
+		serverLockedState = info.locked == true
+		local uptime = tonumber(info.uptime) or 0
+		local hours = math.floor(uptime / 3600)
+		local minutes = math.floor((uptime % 3600) / 60)
+		infoLabel.Text = string.format(
+			"Job ID: %s\nPlace ID: %s\nPlayers: %s / %s\nUptime: %d ч %d мин\nMemory: %s MB\nLock: %s",
+			tostring(info.jobId), tostring(info.placeId), tostring(info.players),
+			tostring(info.maxPlayers), hours, minutes, tostring(info.memory),
+			serverLockedState and "ON" or "OFF"
+		)
+		lockBtn.Text = serverLockedState and "🔓 UNLOCK SERVER" or "🔒 LOCK SERVER"
+		lockBtn.BackgroundColor3 = serverLockedState and COLORS.GREEN_BTN or COLORS.YELLOW_BTN
+	end
+	serverReload = loadInfo
+
+	local function confirmButton(btn: TextButton, confirmText: string, action: () -> ())
+		local armed = false
+		btn.MouseButton1Click:Connect(function()
+			if not armed then
+				armed = true
+				local old = btn.Text
+				btn.Text = confirmText
+				task.delay(3, function()
+					armed = false
+					if btn.Parent then btn.Text = old end
+				end)
+				return
+			end
+			armed = false
+			action()
+		end)
+	end
+
+	announceBtn.MouseButton1Click:Connect(function()
+		local text = announceBox.Text
+		if text == "" then statusLabel.Text = "Введите текст объявления"; return end
+		actionRemote:FireServer("Notify", {}, {text = text, duration = 8})
+		announceBtn.Text = "✅ SENT"
+		task.wait(1)
+		announceBtn.Text = "📢 ANNOUNCE ALL"
+	end)
+
+	lockBtn.MouseButton1Click:Connect(function()
+		actionRemote:FireServer(serverLockedState and "UnlockServer" or "LockServer", {}, {})
+		statusLabel.Text = serverLockedState and "Сервер открывается..." or "Сервер закрывается..."
+		task.wait(0.6)
+		loadInfo()
+	end)
+
+	confirmButton(restartBtn, "SURE? RESTART", function()
+		actionRemote:FireServer("Restart", {}, {})
+		restartBtn.Text = "🔄 RESTARTING..."
+	end)
+
+	confirmButton(unbanAllBtn, "SURE? UNBAN ALL", function()
+		actionRemote:FireServer("UnbanAll", {}, {})
+		unbanAllBtn.Text = "✅ DONE"
+		task.wait(1)
+		unbanAllBtn.Text = "UNBAN ALL"
+	end)
+
+	confirmButton(shutdownBtn, "SURE? SHUTDOWN", function()
+		actionRemote:FireServer("Shutdown", {}, {})
+	end)
+
+	refreshBtn.MouseButton1Click:Connect(loadInfo)
+	loadInfo()
 end
 
 -- =====================================================
@@ -1040,15 +1589,17 @@ end
 -- =====================================================
 -- ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК
 -- =====================================================
-local tabs: {[string]: {btn: TextButton, frame: Frame}} = {
+local tabs: {[string]: {btn: TextButton, frame: Frame, onOpen: any}} = {
 	TELEPORT = {btn = tabTeleport, frame = teleportFrame},
 }
+if tabPlayers and playersFrame then tabs.PLAYERS = {btn = tabPlayers, frame = playersFrame} end
 if tabMod and modFrame then tabs.MOD = {btn = tabMod, frame = modFrame} end
 if tabTools and toolsFrame then tabs.TOOLS = {btn = tabTools, frame = toolsFrame} end
 if tabChar and charFrame then tabs.CHAR = {btn = tabChar, frame = charFrame} end
 if tabLight and lightFrame then tabs.LIGHTING = {btn = tabLight, frame = lightFrame} end
-if tabBan and banFrame then tabs.BAN = {btn = tabBan, frame = banFrame} end
-if tabLogs and logsFrame then tabs.LOGS = {btn = tabLogs, frame = logsFrame} end
+if tabBan and banFrame then tabs.BAN = {btn = tabBan, frame = banFrame, onOpen = banReload} end
+if tabLogs and logsFrame then tabs.LOGS = {btn = tabLogs, frame = logsFrame, onOpen = logsReload} end
+if tabServer and serverFrame then tabs.SERVER = {btn = tabServer, frame = serverFrame, onOpen = serverReload} end
 if tabScript and scriptFrame then tabs.SCRIPT = {btn = tabScript, frame = scriptFrame} end
 
 local function switchTab(name: string)
@@ -1056,11 +1607,19 @@ local function switchTab(name: string)
 		t.frame.Visible = (n == name)
 		t.btn.BackgroundColor3 = (n == name) and COLORS.WHITE_BG or COLORS.DARK_TAB
 	end
+	local t = tabs[name]
+	if t and t.onOpen then
+		task.spawn(function()
+			local ok, err = pcall(t.onOpen)
+			if not ok then warn("[AdminClient] tab reload error: " .. tostring(err)) end
+		end)
+	end
 end
 
 for name, t in pairs(tabs) do
 	t.btn.MouseButton1Click:Connect(function() switchTab(name) end)
 end
+
 
 -- =====================================================
 -- ЗАКРЫТИЕ / ОТКРЫТИЕ
